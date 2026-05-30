@@ -7,6 +7,10 @@ struct AppSelectionSnapshot {
     let bundleIdentifier: String?
     let windowTitle: String?
     let selectedText: String?
+    // Surrounding text read via the Accessibility API at the moment recording starts.
+    let precedingText: String?
+    let followingText: String?
+    let cursorPosition: String?
 }
 
 struct AppContext {
@@ -14,6 +18,10 @@ struct AppContext {
     let bundleIdentifier: String?
     let windowTitle: String?
     let selectedText: String?
+    // Surrounding text captured by AccessibilityTextReader at recording time.
+    let precedingText: String?
+    let followingText: String?
+    let cursorPosition: String?
     let currentActivity: String
     let contextSystemPrompt: String?
     let contextPrompt: String?
@@ -77,16 +85,24 @@ Return only two sentences, no labels, no markdown, no extra commentary.
                 appName: nil,
                 bundleIdentifier: nil,
                 windowTitle: nil,
-                selectedText: nil
+                selectedText: nil,
+                precedingText: nil,
+                followingText: nil,
+                cursorPosition: nil
             )
         }
 
         let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+        // Synchronous read — sufficient here since recording hasn't started yet.
+        let surrounding = AccessibilityTextReader.readSurroundingText(from: appElement)
         return AppSelectionSnapshot(
             appName: frontmostApp.localizedName,
             bundleIdentifier: frontmostApp.bundleIdentifier,
             windowTitle: focusedWindowTitle(from: appElement) ?? frontmostApp.localizedName,
-            selectedText: rawSelectedText(from: appElement)
+            selectedText: rawSelectedText(from: appElement),
+            precedingText: surrounding.precedingText,
+            followingText: surrounding.followingText,
+            cursorPosition: surrounding.cursorPosition.rawValue
         )
     }
 
@@ -99,6 +115,9 @@ Return only two sentences, no labels, no markdown, no extra commentary.
                 bundleIdentifier: nil,
                 windowTitle: nil,
                 selectedText: nil,
+                precedingText: nil,
+                followingText: nil,
+                cursorPosition: nil,
                 currentActivity: "You are dictating in an unrecognized context.",
                 contextSystemPrompt: contextSystemPrompt,
                 contextPrompt: nil,
@@ -114,14 +133,30 @@ Return only two sentences, no labels, no markdown, no extra commentary.
 
         let windowTitle = focusedWindowTitle(from: appElement) ?? appName
         let selectedText = selectedText(from: appElement)
-        let screenshot = captureActiveWindowScreenshot(
-            processIdentifier: frontmostApp.processIdentifier,
-            appElement: appElement,
-            focusedWindowTitle: windowTitle
-        )
+
+        // Async read with automatic AX tree sync for Electron/web views.
+        let surrounding = await AccessibilityTextReader.readSurroundingTextWithSync(from: appElement)
+
+        // Skip screenshot when the AX API provided text context (~200ms saving).
+        let screenshot: (dataURL: String?, mimeType: String?, error: String?)
+        if surrounding.hasContext {
+            screenshot = (nil, nil, "Skipped: text context available via Accessibility API")
+        } else {
+            screenshot = captureActiveWindowScreenshot(
+                processIdentifier: frontmostApp.processIdentifier,
+                appElement: appElement,
+                focusedWindowTitle: windowTitle
+            )
+        }
+
+        // Use a deterministic summary when AX text context is present;
+        // otherwise fall back to LLM inference from screenshot + metadata.
         let currentActivity: String
         let contextPrompt: String?
-        if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if surrounding.hasContext {
+            currentActivity = deterministicActivitySummary(appName: appName, windowTitle: windowTitle)
+            contextPrompt = nil
+        } else if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if let result = await inferActivityWithLLM(
                 appName: appName,
                 bundleIdentifier: bundleIdentifier,
@@ -158,6 +193,9 @@ Return only two sentences, no labels, no markdown, no extra commentary.
             bundleIdentifier: bundleIdentifier,
             windowTitle: windowTitle,
             selectedText: selectedText,
+            precedingText: surrounding.precedingText,
+            followingText: surrounding.followingText,
+            cursorPosition: surrounding.cursorPosition.rawValue,
             currentActivity: currentActivity,
             contextSystemPrompt: contextSystemPrompt,
             contextPrompt: contextPrompt,
@@ -312,6 +350,16 @@ Selected text: \(selectedText ?? "None")
             return "Could not reliably infer a two-sentence summary for \(activeApp) from the screenshot and metadata."
         }
         return "Could not reliably infer a two-sentence summary for \(activeApp) from the visible metadata."
+    }
+
+    /// Builds a short activity label from app name and window title alone.
+    /// Used instead of screenshot + LLM inference when AX text context is available.
+    private func deterministicActivitySummary(appName: String?, windowTitle: String?) -> String {
+        let app = appName ?? "the active application"
+        if let title = windowTitle, !title.isEmpty, title != appName {
+            return "Dictating in \(app) (\(title))."
+        }
+        return "Dictating in \(app)."
     }
 
     private func focusedWindowTitle(from appElement: AXUIElement) -> String? {
