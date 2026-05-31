@@ -2639,7 +2639,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 }
                             }
 
-                            let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
+                            let pendingClipboardRestore = self.writeTranscriptToPasteboard(
+                                trimmedFinalTranscript,
+                                precedingText: appContext.precedingText,
+                                followingText: appContext.followingText
+                            )
                             self.pasteAtCursorWhenShortcutReleased {
                                 if shouldPressEnterAfterPaste {
                                     self.pressEnterAfterPaste {
@@ -3118,18 +3122,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// types for clipboard managers, and saving the clipboard state for later restoration.
     /// - Parameter transcript: The text to be pasted.
     /// - Returns: A `PendingClipboardRestore` object if clipboard preservation is enabled, otherwise nil.
-    private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
+    private func writeTranscriptToPasteboard(_ transcript: String, precedingText: String? = nil, followingText: String? = nil) -> PendingClipboardRestore? {
         let pasteboard = NSPasteboard.general
         let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
-        // Append a space when ending with sentence-ending punctuation so the
-        // next dictation does not jam against the prior period.
-        let textToWrite: String
-        if let last = transcript.last, ".!?".contains(last) {
-            textToWrite = transcript + " "
-        } else {
-            textToWrite = transcript
-        }
+        // Delegate formatting to deterministically adjust spacing, capitalization,
+        // and punctuation based on the surrounding accessibility text context.
+        let formatted = ContextualFormattingService.format(
+            transcript,
+            precedingText: precedingText,
+            followingText: followingText
+        )
+        let textToWrite = formatted.leadingSpace + formatted.text + formatted.trailingSpace
 
         // Declare standard transient types alongside .string so well-behaved
         // clipboard managers (Maccy, Raycast, Paste, Clipy, Flycut, etc.) skip

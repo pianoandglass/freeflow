@@ -66,15 +66,11 @@ enum ContextualFormattingService {
         guard let first = text.first else { return text }
 
         let shouldCapitalize: Bool
-        guard let preceding = preceding else {
-            // No AX context: capitalize (matches original LLM behavior for standalone utterances).
-            shouldCapitalize = true
-        } switch preceding.isEmpty {
-        case true:
-            // Empty field: capitalize.
-            shouldCapitalize = true
-        default:
-            if endsWithSentenceBreak(preceding) {
+        if let preceding = preceding {
+            if preceding.isEmpty {
+                // Empty field: capitalize.
+                shouldCapitalize = true
+            } else if endsWithSentenceBreak(preceding) {
                 // After ". " or ".\n" or similar: capitalize.
                 shouldCapitalize = true
             } else if endsWithListMarker(preceding) {
@@ -84,6 +80,9 @@ enum ContextualFormattingService {
                 // Mid-sentence: lowercase.
                 shouldCapitalize = false
             }
+        } else {
+            // No AX context: capitalize (matches original LLM behavior for standalone utterances).
+            shouldCapitalize = true
         }
 
         if shouldCapitalize {
@@ -160,8 +159,8 @@ enum ContextualFormattingService {
         var t = text
         guard t.last == "." else { return false }
         t.removeLast()
-        let word = t.suffix(while: { !$0.isWhitespace })
-        return word.count >= 1 && word.count <= 4
+        let wordCount = t.reversed().prefix(while: { !$0.isWhitespace }).count
+        return wordCount >= 1 && wordCount <= 4
     }
 
     // MARK: - Smart spacing
