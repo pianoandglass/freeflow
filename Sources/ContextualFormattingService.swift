@@ -165,29 +165,55 @@ enum ContextualFormattingService {
 
     // MARK: - Smart spacing
 
-    /// Add a leading space when both sides start/end with word characters.
+    /// Determines if a leading space is needed between `preceding` and `text`.
     private static func needsLeadingSpace(text: String, preceding: String?) -> Bool {
+        // If we don't know the context, we shouldn't guess leading spaces (user might have typed a space manually).
         guard let preceding = preceding, !preceding.isEmpty else { return false }
+        
         guard let precLast = preceding.unicodeScalars.last,
               let textFirst = text.unicodeScalars.first else { return false }
-        return CharacterSet.alphanumerics.contains(precLast)
-            && (CharacterSet.alphanumerics.contains(textFirst)
-                || textFirst.value == 0x0022   // "
-                || textFirst.value == 0x2018   // '
-                || textFirst.value == 0x201C)  // "
+              
+        // If the preceding text already ends in whitespace, no space needed.
+        if CharacterSet.whitespacesAndNewlines.contains(precLast) {
+            return false
+        }
+        
+        // If the NEW text STARTS with punctuation that attaches to the left (like , . ! ? ; :), no space.
+        if ",.!?;:".unicodeScalars.contains(textFirst) {
+            return false
+        }
+        
+        // If preceding text ends in an opening bracket/quote, we usually don't want a space.
+        if "([{".unicodeScalars.contains(precLast) {
+            return false
+        }
+        
+        // Otherwise, add a space to separate the new dictation from the existing text.
+        return true
     }
 
-    /// Add a trailing space when the following text starts with a word character.
-    /// When followingText is nil, falls back to the original heuristic (space after .!?).
+    /// Determines if a trailing space is needed after `text`, considering `following`.
     private static func needsTrailingSpace(text: String, following: String?) -> Bool {
-        guard let following = following else {
-            // Original behavior: space after sentence-ending punctuation.
-            return text.last.map { ".!?".contains($0) } ?? false
+        // Wispr/FreeFlow usually adds a space ONLY if it ends in . ! ? so the NEXT dictation is separated.
+        guard let textLast = text.last, ".!?".contains(textLast) else { return false }
+        
+        // If we don't have context (or at end of document), fallback to old behavior: append space after .!?
+        guard let following = following, !following.isEmpty else { 
+            return true 
         }
-        guard !following.isEmpty else { return false }
-        guard let textLast = text.unicodeScalars.last,
-              let followFirst = following.unicodeScalars.first else { return false }
-        return CharacterSet.alphanumerics.contains(textLast)
-            && CharacterSet.alphanumerics.contains(followFirst)
+        
+        guard let follFirst = following.unicodeScalars.first else { return true }
+        
+        // If the following text ALREADY starts with a space or newline, we don't need to add one.
+        if CharacterSet.whitespacesAndNewlines.contains(follFirst) {
+            return false
+        }
+        
+        // If the following text is a closing bracket, no space. "Hello.)"
+        if ")]}".unicodeScalars.contains(follFirst) {
+            return false
+        }
+        
+        return true
     }
 }
