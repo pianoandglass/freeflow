@@ -390,18 +390,15 @@ Use these spellings exactly in the output when relevant:
             systemPrompt += "\n\n" + vocabularyPrompt
         }
 
-        var userMessage = """
-Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Return EMPTY if there should be no result.
+        let userMessage = """
+Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Do not include PRECEDING_TEXT or FOLLOWING_TEXT in your output. Return EMPTY if there should be no result.
 
 CONTEXT: "\(context.contextSummary)"
+
+PRECEDING_TEXT: "\(context.precedingText ?? "")"
+RAW_TRANSCRIPTION: "\(transcript)"
+FOLLOWING_TEXT: "\(context.followingText ?? "")"
 """
-        if let preceding = context.precedingText, !preceding.isEmpty {
-            userMessage += "\n\nPRECEDING_TEXT: \"\(preceding)\""
-        }
-        if let following = context.followingText, !following.isEmpty {
-            userMessage += "\n\nFOLLOWING_TEXT: \"\(following)\""
-        }
-        userMessage += "\n\nRAW_TRANSCRIPTION: \"\(transcript)\""
 
         let promptForDisplay = """
 Model: \(model)
@@ -517,18 +514,16 @@ Use these spellings exactly in the output when relevant:
             systemPrompt += "\n\n" + vocabularyPrompt
         }
 
-        var userMessage = """
-Transform SELECTED_TEXT according to VOICE_COMMAND and return only the replacement text.
+        let userMessage = """
+Transform SELECTED_TEXT according to VOICE_COMMAND and return only the replacement text. Do not include PRECEDING_TEXT or FOLLOWING_TEXT in your output.
 
 CONTEXT: "\(context.contextSummary)"
+
+PRECEDING_TEXT: "\(context.precedingText ?? "")"
+VOICE_COMMAND: "\(voiceCommand)"
+SELECTED_TEXT: "\(selectedText)"
+FOLLOWING_TEXT: "\(context.followingText ?? "")"
 """
-        if let preceding = context.precedingText, !preceding.isEmpty {
-            userMessage += "\n\nPRECEDING_TEXT: \"\(preceding)\""
-        }
-        if let following = context.followingText, !following.isEmpty {
-            userMessage += "\n\nFOLLOWING_TEXT: \"\(following)\""
-        }
-        userMessage += "\n\nVOICE_COMMAND: \"\(voiceCommand)\"\n\nSELECTED_TEXT: \"\(selectedText)\""
 
         let promptForDisplay = """
 Model: \(model)
