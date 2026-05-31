@@ -81,8 +81,8 @@ enum ContextualFormattingService {
                 shouldCapitalize = false
             }
         } else {
-            // No AX context: capitalize (matches original LLM behavior for standalone utterances).
-            shouldCapitalize = true
+            // No AX context: rely on the LLM/Transcription engine's default capitalization.
+            return text
         }
 
         if shouldCapitalize {

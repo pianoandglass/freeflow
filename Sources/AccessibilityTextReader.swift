@@ -159,13 +159,13 @@ enum AccessibilityTextReader {
         // 1. Select to beginning of line
         sendKey(source, 123, command: true, shift: true, keyDown: true)
         sendKey(source, 123, command: true, shift: true, keyDown: false)
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        try? await Task.sleep(nanoseconds: 50_000_000)
 
         // 2. Copy selection
         pasteboard.clearContents()
         sendKey(source, 8, command: true, shift: false, keyDown: true)
         sendKey(source, 8, command: true, shift: false, keyDown: false)
-        try? await Task.sleep(nanoseconds: 30_000_000)
+        try? await Task.sleep(nanoseconds: 100_000_000)
 
         let precedingText = pasteboard.string(forType: .string)
 
