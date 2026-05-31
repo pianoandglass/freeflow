@@ -145,10 +145,9 @@ enum ContextualFormattingService {
         }
 
         let followingFirst = following.unicodeScalars.first
-        let followsWordChar = followingFirst.map { CharacterSet.alphanumerics.contains($0) } ?? false
-        let followsPunct    = followingFirst.map { ".!?,;:".unicodeScalars.contains($0) } ?? false
+        let followsPunct = followingFirst.map { ".!?,;:".unicodeScalars.contains($0) } ?? false
 
-        if followsWordChar || followsPunct {
+        if followsPunct {
             return String(text.dropLast())
         }
         return text
@@ -197,12 +196,12 @@ enum ContextualFormattingService {
         // The system usually adds a space ONLY if it ends in . ! ? so the NEXT dictation is separated.
         guard let textLast = text.last, ".!?".contains(textLast) else { return false }
         
-        // If we don't have context (or at end of document), fallback to old behavior: append space after .!?
+        // If we don't have context (or at end of document), NEVER add trailing spaces blindly.
         guard let following = following, !following.isEmpty else { 
-            return true 
+            return false 
         }
         
-        guard let follFirst = following.unicodeScalars.first else { return true }
+        guard let follFirst = following.unicodeScalars.first else { return false }
         
         // If the following text ALREADY starts with a space or newline, we don't need to add one.
         if CharacterSet.whitespacesAndNewlines.contains(follFirst) {
