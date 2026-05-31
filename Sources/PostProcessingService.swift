@@ -166,7 +166,7 @@ Behavior:
                 }
                 return try await self.processWithFallback(
                     transcript: transcript,
-                    contextSummary: context.contextSummary,
+                    context: context,
                     customVocabulary: vocabularyTerms,
                     customSystemPrompt: customSystemPrompt,
                     outputLanguage: outputLanguage
@@ -217,7 +217,7 @@ Behavior:
                 return try await self.processCommandTransformWithFallback(
                     selectedText: selectedText,
                     voiceCommand: voiceCommand,
-                    contextSummary: context.contextSummary,
+                    context: context,
                     customVocabulary: vocabularyTerms,
                     outputLanguage: outputLanguage
                 )
@@ -243,7 +243,7 @@ Behavior:
 
     private func processWithFallback(
         transcript: String,
-        contextSummary: String,
+        context: AppContext,
         customVocabulary: [String],
         customSystemPrompt: String = "",
         outputLanguage: String = ""
@@ -253,7 +253,7 @@ Behavior:
         do {
             return try await process(
                 transcript: transcript,
-                contextSummary: contextSummary,
+                context: context,
                 model: primaryModel,
                 customVocabulary: customVocabulary,
                 customSystemPrompt: customSystemPrompt,
@@ -280,7 +280,7 @@ Behavior:
 
             return try await process(
                 transcript: transcript,
-                contextSummary: contextSummary,
+                context: context,
                 model: retryModel,
                 customVocabulary: customVocabulary,
                 customSystemPrompt: customSystemPrompt,
@@ -292,7 +292,7 @@ Behavior:
     private func processCommandTransformWithFallback(
         selectedText: String,
         voiceCommand: String,
-        contextSummary: String,
+        context: AppContext,
         customVocabulary: [String],
         outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
@@ -302,7 +302,7 @@ Behavior:
             return try await processCommandTransform(
                 selectedText: selectedText,
                 voiceCommand: voiceCommand,
-                contextSummary: contextSummary,
+                context: context,
                 model: primaryModel,
                 customVocabulary: customVocabulary,
                 outputLanguage: outputLanguage
@@ -329,7 +329,7 @@ Behavior:
             return try await processCommandTransform(
                 selectedText: selectedText,
                 voiceCommand: voiceCommand,
-                contextSummary: contextSummary,
+                context: context,
                 model: retryModel,
                 customVocabulary: customVocabulary,
                 outputLanguage: outputLanguage
@@ -356,7 +356,7 @@ Behavior:
 
     private func process(
         transcript: String,
-        contextSummary: String,
+        context: AppContext,
         model: String,
         customVocabulary: [String],
         customSystemPrompt: String = "",
@@ -390,13 +390,18 @@ Use these spellings exactly in the output when relevant:
             systemPrompt += "\n\n" + vocabularyPrompt
         }
 
-        let userMessage = """
+        var userMessage = """
 Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Return EMPTY if there should be no result.
 
-CONTEXT: "\(contextSummary)"
-
-RAW_TRANSCRIPTION: "\(transcript)"
+CONTEXT: "\(context.contextSummary)"
 """
+        if let preceding = context.precedingText, !preceding.isEmpty {
+            userMessage += "\n\nPRECEDING_TEXT: \"\(preceding)\""
+        }
+        if let following = context.followingText, !following.isEmpty {
+            userMessage += "\n\nFOLLOWING_TEXT: \"\(following)\""
+        }
+        userMessage += "\n\nRAW_TRANSCRIPTION: \"\(transcript)\""
 
         let promptForDisplay = """
 Model: \(model)
@@ -478,7 +483,7 @@ Model: \(model)
     private func processCommandTransform(
         selectedText: String,
         voiceCommand: String,
-        contextSummary: String,
+        context: AppContext,
         model: String,
         customVocabulary: [String],
         outputLanguage: String = ""
@@ -512,15 +517,18 @@ Use these spellings exactly in the output when relevant:
             systemPrompt += "\n\n" + vocabularyPrompt
         }
 
-        let userMessage = """
+        var userMessage = """
 Transform SELECTED_TEXT according to VOICE_COMMAND and return only the replacement text.
 
-CONTEXT: "\(contextSummary)"
-
-VOICE_COMMAND: "\(voiceCommand)"
-
-SELECTED_TEXT: "\(selectedText)"
+CONTEXT: "\(context.contextSummary)"
 """
+        if let preceding = context.precedingText, !preceding.isEmpty {
+            userMessage += "\n\nPRECEDING_TEXT: \"\(preceding)\""
+        }
+        if let following = context.followingText, !following.isEmpty {
+            userMessage += "\n\nFOLLOWING_TEXT: \"\(following)\""
+        }
+        userMessage += "\n\nVOICE_COMMAND: \"\(voiceCommand)\"\n\nSELECTED_TEXT: \"\(selectedText)\""
 
         let promptForDisplay = """
 Model: \(model)
