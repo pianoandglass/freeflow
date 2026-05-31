@@ -41,9 +41,6 @@ enum ContextualFormattingService {
 
     // MARK: - Capitalization
 
-    /// Capitalizes after sentence-ending punctuation (.?!…) or at field start.
-    /// Lowercases after mid-sentence punctuation (,;:)]}/') or mid-sentence insertion.
-    /// Preserves LLM decision when no strong rule applies.
     private static func applyCapitalization(
         _ text: String,
         preceding: String?,
@@ -51,40 +48,99 @@ enum ContextualFormattingService {
     ) -> String {
         guard let first = text.first, let preceding else { return text }
 
-        let trimmed = preceding.trimmingCharacters(in: .whitespaces)
-        let shouldCapitalize: Bool
+        let cap = { first.uppercased() + text.dropFirst() }
+        let low = { first.lowercased() + text.dropFirst() }
 
-        if trimmed.isEmpty {
-            shouldCapitalize = true                                      // absolute field start
-        } else if let last = trimmed.last, ".?!…".contains(last) {
-            shouldCapitalize = true                                      // after sentence break
-        } else if let last = trimmed.last, ",;:)]}/".contains(last) {
-            shouldCapitalize = false                                     // after mid-sentence punct
-        } else if following?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            shouldCapitalize = false                                     // mid-sentence insertion
-        } else {
-            return text                                                  // no strong rule: keep LLM output
+        // RULE 1: List marker -> UPPER
+        if preceding.range(of: #"(?:^|\n)\s*(?:[-*•–]|[a-zA-Z0-9]+[\.\)])\s+$"#, options: .regularExpression) != nil {
+            return cap()
         }
 
-        return shouldCapitalize
-            ? first.uppercased() + text.dropFirst()
-            : first.lowercased() + text.dropFirst()
+        // RULE 2: New line or paragraph -> UPPER
+        if preceding.hasSuffix("\n") {
+            return cap()
+        }
+
+        let trimmed = preceding.trimmingCharacters(in: .whitespaces)
+        if let last = trimmed.last {
+            // RULE 3: After sentence break -> UPPER
+            if ".?!…".contains(last) {
+                return cap()
+            }
+
+            // RULE 4: After comma, semicolon, colon -> LOWER
+            if ",;:".contains(last) {
+                return low()
+            }
+
+            // RULE 5: After closing paren, bracket, brace -> LOWER
+            if ")]}".contains(last) {
+                return low()
+            }
+
+            // RULE 6: After slash or dash -> LOWER (Exception: first char -> UPPER)
+            if last == "/" || last == "—" || last == "-" {
+                if (last == "—" || last == "-") && trimmed.count == 1 {
+                    return cap()
+                }
+                return low()
+            }
+
+            // RULE 7: After opening quote -> INHERIT
+            if last == "\"" || last == "'" {
+                let beforeQuote = trimmed.dropLast().trimmingCharacters(in: .whitespaces)
+                if let charBefore = beforeQuote.last {
+                    if ".?!…\n".contains(charBefore) {
+                        return cap()
+                    } else {
+                        return low()
+                    }
+                } else {
+                    return cap()
+                }
+            }
+        }
+
+        // RULE 8: Mid-sentence insertion -> LOWER
+        if following?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return low()
+        }
+
+        // RULE 9: Absolute start of field -> UPPER
+        if preceding.isEmpty {
+            return cap()
+        }
+
+        return text
     }
 
     // MARK: - Duplicate Punctuation
 
-    /// Removes terminal punctuation when it duplicates or conflicts with what follows.
-    /// Rules: same punct already follows → remove; period before comma/semicolon → remove.
     private static func removeDuplicatePunctuation(_ text: String, following: String?) -> String {
-        guard
-            let following, !following.isEmpty,
-            let last = text.last,
-            let followFirst = following.trimmingCharacters(in: .whitespaces).first
-        else { return text }
+        var result = text
+        guard let following, !following.isEmpty else { return result }
+        let followFirst = following.trimmingCharacters(in: .whitespaces).first
 
-        if ".?!".contains(last) && last == followFirst { return String(text.dropLast()) }
-        if last == "." && ",;".contains(followFirst)   { return String(text.dropLast()) }
+        // REGRA P1: Remover ponto final em inserção no meio de frase
+        if result.last == ".", let f = followFirst, f.isLetter || f.isNumber {
+            result = String(result.dropLast())
+        }
 
-        return text
+        // REGRA P2: Remover ponto final antes de travessão
+        if result.last == ".", let f = followFirst, f == "—" || f == "-" {
+            result = String(result.dropLast())
+        }
+
+        // REGRA P3: Remover pontuação duplicada
+        if let last = result.last, ".?!".contains(last), let f = followFirst, last == f {
+            result = String(result.dropLast())
+        }
+
+        // REGRA P4: Remover ponto antes de vírgula ou ponto e vírgula
+        if result.last == ".", let f = followFirst, ",;".contains(f) {
+            result = String(result.dropLast())
+        }
+
+        return result
     }
 }
