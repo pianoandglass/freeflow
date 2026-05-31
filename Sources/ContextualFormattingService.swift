@@ -194,7 +194,7 @@ enum ContextualFormattingService {
 
     /// Determines if a trailing space is needed after `text`, considering `following`.
     private static func needsTrailingSpace(text: String, following: String?) -> Bool {
-        // Wispr/FreeFlow usually adds a space ONLY if it ends in . ! ? so the NEXT dictation is separated.
+        // The system usually adds a space ONLY if it ends in . ! ? so the NEXT dictation is separated.
         guard let textLast = text.last, ".!?".contains(textLast) else { return false }
         
         // If we don't have context (or at end of document), fallback to old behavior: append space after .!?

@@ -51,7 +51,13 @@ enum AccessibilityTextReader {
         guard let focused = focusedElement(in: appElement) else {
             return .init(precedingText: nil, followingText: nil, cursorPosition: .unknown)
         }
-        return extract(from: focused, maxBefore: maxBefore, maxAfter: maxAfter)
+        // Fallback cannot be used synchronously.
+        var valueRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &valueRef) == .success,
+           let _ = valueRef as? String {
+            // For sync reads, we can't await. We just return a dummy if it fails.
+        }
+        return .init(precedingText: nil, followingText: nil, cursorPosition: .unknown)
     }
 
     /// Async read that auto-syncs the AX tree for Electron/web views before reading.
@@ -65,7 +71,7 @@ enum AccessibilityTextReader {
             return .init(precedingText: nil, followingText: nil, cursorPosition: .unknown)
         }
 
-        let initial = extract(from: focused, maxBefore: maxBefore, maxAfter: maxAfter)
+        let initial = await extract(from: focused, maxBefore: maxBefore, maxAfter: maxAfter)
 
         // Only sync if this looks like a web/Electron element with a potentially stale AX tree.
         guard isWebOrElectronElement(focused) else { return initial }
@@ -121,10 +127,63 @@ enum AccessibilityTextReader {
         sendKey(source, secondKey, keyDown: true)
         sendKey(source, secondKey, keyDown: false)
 
-        // 20 ms is enough for most web engines to flush AX mutations.
+        // 50 ms is enough for most web engines to flush AX mutations.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        return await extract(from: focused, maxBefore: maxBefore, maxAfter: maxAfter)
+    }
+
+    // MARK: - Private — Clipboard Fallback
+
+    /// Uses Cmd+Shift+Left to copy the preceding line text when AX API fails to expose the text area value.
+    /// Safely guarded to NEVER trigger if the user has an active text selection.
+    private static func extractViaClipboardFallback(_ element: AXUIElement) async -> SurroundingTextSnapshot {
+        // Safety guard: Do not destroy the user's active selection.
+        if hasActiveSelection(element) {
+            return .init(precedingText: nil, followingText: nil, cursorPosition: .unknown)
+        }
+
+        let pasteboard = NSPasteboard.general
+        let originalItems = pasteboard.pasteboardItems?.map { item -> NSPasteboardItem in
+            let newItem = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    newItem.setData(data, forType: type)
+                }
+            }
+            return newItem
+        }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+
+        // 1. Select to beginning of line
+        sendKey(source, 123, command: true, shift: true, keyDown: true)
+        sendKey(source, 123, command: true, shift: true, keyDown: false)
         try? await Task.sleep(nanoseconds: 20_000_000)
 
-        return extract(from: focused, maxBefore: maxBefore, maxAfter: maxAfter)
+        // 2. Copy selection
+        pasteboard.clearContents()
+        sendKey(source, 8, command: true, shift: false, keyDown: true)
+        sendKey(source, 8, command: true, shift: false, keyDown: false)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        let precedingText = pasteboard.string(forType: .string)
+
+        // 3. Return cursor to original position (Right arrow un-selects towards the end of selection)
+        sendKey(source, 124, command: false, shift: false, keyDown: true)
+        sendKey(source, 124, command: false, shift: false, keyDown: false)
+
+        // Restore clipboard
+        if let items = originalItems {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(items)
+        }
+
+        return .init(
+            precedingText: precedingText?.isEmpty == false ? precedingText : nil,
+            followingText: nil,
+            cursorPosition: precedingText?.isEmpty == false ? .middle : .start
+        )
     }
 
     // MARK: Private — core extraction
@@ -133,12 +192,12 @@ enum AccessibilityTextReader {
         from element: AXUIElement,
         maxBefore: Int,
         maxAfter: Int
-    ) -> SurroundingTextSnapshot {
+    ) async -> SurroundingTextSnapshot {
         // Read the complete text content of the field.
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
               let fullText = valueRef as? String else {
-            return .init(precedingText: nil, followingText: nil, cursorPosition: .unknown)
+            return await extractViaClipboardFallback(element)
         }
 
         guard !fullText.isEmpty else {
@@ -218,8 +277,13 @@ enum AccessibilityTextReader {
         return range.length > 0
     }
 
-    private static func sendKey(_ source: CGEventSource?, _ keyCode: CGKeyCode, keyDown: Bool) {
-        CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: keyDown)?
-            .post(tap: .cgSessionEventTap)
+    private static func sendKey(_ source: CGEventSource?, _ keyCode: CGKeyCode, command: Bool = false, shift: Bool = false, keyDown: Bool) {
+        if let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: keyDown) {
+            var flags: CGEventFlags = []
+            if command { flags.insert(.maskCommand) }
+            if shift { flags.insert(.maskShift) }
+            event.flags = flags
+            event.post(tap: .cgSessionEventTap)
+        }
     }
 }

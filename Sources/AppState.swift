@@ -1689,7 +1689,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     /// Copies the last transcript to the pasteboard and pastes it into the
-    /// focused app — Wispr Flow style. Reuses the dictation paste pipeline so
+    /// focused app — smart insertion style. Reuses the dictation paste pipeline so
     /// preserveClipboard is honored and the synthetic Cmd+V waits for the
     /// trigger shortcut to be fully released.
     func copyLastTranscriptToPasteboard() {
