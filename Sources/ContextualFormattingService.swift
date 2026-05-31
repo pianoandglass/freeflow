@@ -2,161 +2,89 @@ import Foundation
 
 // MARK: - ContextualFormattingService
 
-/// O objetivo deste serviço é aplicar deterministicamente as regras de formatação pós-LLM.
-/// Cada seção espelha exatamente as regras documentadas.
+/// Applies deterministic post-LLM formatting using the surrounding cursor context (AX).
+/// When context is nil, each rule falls back to a safe default.
 enum ContextualFormattingService {
 
-    // MARK: - API Principal
+    // MARK: - Public API
 
+    /// Main entry point. Rules applied in order:
+    /// strip trailing whitespace → remove duplicate punctuation → capitalize → compute spacing.
     static func format(
         _ text: String,
         precedingText: String?,
         followingText: String?
     ) -> (text: String, leadingSpace: String, trailingSpace: String) {
-        // Regra base: Nunca deixar espaço no final do texto colado (strip spaces).
-        var processedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !processedText.isEmpty else { return ("", "", "") }
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.isEmpty else { return ("", "", "") }
 
-        // Pontuação Duplicada
-        processedText = removeDuplicatePunctuation(processedText, following: followingText)
+        result = removeDuplicatePunctuation(result, following: followingText)
+        result = applyCapitalization(result, preceding: precedingText, following: followingText)
 
-        // Capitalização
-        processedText = applyCapitalizationRules(processedText, preceding: precedingText, following: followingText)
-
-        // Espaçamento
-        let leadingSpace = computeLeadingSpace(preceding: precedingText)
-        let trailingSpace = computeTrailingSpace(following: followingText)
-
-        return (processedText, leadingSpace, trailingSpace)
+        return (result, leadingSpace(preceding: precedingText), trailingSpace(following: followingText))
     }
 
-    // MARK: - Espaçamento
+    // MARK: - Spacing
 
-    /// Implementa as regras de espaço antes do texto inserido.
-    /// - Se o texto precedente termina com letra ou número → adicionar espaço antes.
-    /// - Se o texto precedente termina com `(`, `[`, `{`, `"`, `'` → nenhum espaço antes.
-    /// - Inserção entre duas palavras → garantir exatamente um espaço de cada lado, sem duplicar espaços existentes.
-    private static func computeLeadingSpace(preceding: String?) -> String {
-        guard let preceding = preceding, !preceding.isEmpty else { return "" }
-        guard let lastChar = preceding.last else { return "" }
-
-        // Inserção entre duas palavras → garantir exatamente um espaço de cada lado, sem duplicar espaços existentes.
-        if lastChar.isWhitespace {
-            return ""
-        }
-
-        // Se o texto precedente termina com `(`, `[`, `{`, `"`, `'` → nenhum espaço antes.
-        if "([{\"'".contains(lastChar) {
-            return ""
-        }
-
-        // Se o texto precedente termina com letra ou número → adicionar espaço antes.
-        if lastChar.isLetter || lastChar.isNumber {
-            return " "
-        }
-
-        // Caso padrão (ex: após pontuação final): adicionar espaço.
-        return " "
+    /// No leading space if preceding ends with whitespace or an opening bracket/quote.
+    /// Adds a space otherwise (after letters, numbers, or closing punctuation).
+    private static func leadingSpace(preceding: String?) -> String {
+        guard let preceding, !preceding.isEmpty, let last = preceding.last else { return "" }
+        return last.isWhitespace || "([{\"'".contains(last) ? "" : " "
     }
 
-    /// Implementa as regras de espaço após o texto inserido.
-    /// - Se o texto seguinte começa com `)`, `]`, `}`, `,`, `.`, `?`, `!`, `;`, `:` → nenhum espaço depois.
-    /// - Se o texto seguinte começa com letra ou número → adicionar espaço depois.
-    /// - Inserção antes de `)`, `]`, `}`, `"`, `'` → nenhum espaço depois.
-    private static func computeTrailingSpace(following: String?) -> String {
-        guard let following = following, !following.isEmpty else { return "" }
-        guard let firstChar = following.first else { return "" }
-
-        // Inserção entre duas palavras → garantir exatamente um espaço de cada lado, sem duplicar espaços existentes.
-        if firstChar.isWhitespace {
-            return ""
-        }
-
-        // Se o texto seguinte começa com pontuações específicas → nenhum espaço depois.
-        if ")]},.?!;:'\"".contains(firstChar) {
-            return ""
-        }
-
-        // Se o texto seguinte começa com letra ou número → adicionar espaço depois.
-        if firstChar.isLetter || firstChar.isNumber {
-            return " "
-        }
-
-        // Caso padrão: separar.
-        return " "
+    /// No trailing space if following starts with whitespace, punctuation, or a closing bracket/quote.
+    private static func trailingSpace(following: String?) -> String {
+        guard let following, !following.isEmpty, let first = following.first else { return "" }
+        return first.isWhitespace || ")]},.?!;:'\"".contains(first) ? "" : " "
     }
 
-    // MARK: - Capitalização
+    // MARK: - Capitalization
 
-    /// Implementa as regras de letras maiúsculas e minúsculas no início da frase.
-    /// - Texto colado após `.`, `?`, `!`, `…` → primeira letra maiúscula.
-    /// - Texto colado após `,`, `;`, `:`, `)`, `]`, `}`, `/` → primeira letra minúscula.
-    /// - Texto colado no meio de frase (há texto seguinte) → primeira letra minúscula.
-    /// - Texto colado no início absoluto do campo (sem texto precedente) → primeira letra maiúscula.
-    private static func applyCapitalizationRules(_ text: String, preceding: String?, following: String?) -> String {
-        guard let first = text.first else { return text }
+    /// Capitalizes after sentence-ending punctuation (.?!…) or at field start.
+    /// Lowercases after mid-sentence punctuation (,;:)]}/') or mid-sentence insertion.
+    /// Preserves LLM decision when no strong rule applies.
+    private static func applyCapitalization(
+        _ text: String,
+        preceding: String?,
+        following: String?
+    ) -> String {
+        guard let first = text.first, let preceding else { return text }
 
-        // Se não temos certeza do contexto (ex: texto selecionado para substituir), mantemos a decisão da LLM.
-        guard let preceding = preceding else { return text }
-
+        let trimmed = preceding.trimmingCharacters(in: .whitespaces)
         let shouldCapitalize: Bool
 
-        if preceding.isEmpty {
-            // Texto colado no início absoluto do campo (sem texto precedente) → primeira letra maiúscula.
-            shouldCapitalize = true
+        if trimmed.isEmpty {
+            shouldCapitalize = true                                      // absolute field start
+        } else if let last = trimmed.last, ".?!…".contains(last) {
+            shouldCapitalize = true                                      // after sentence break
+        } else if let last = trimmed.last, ",;:)]}/".contains(last) {
+            shouldCapitalize = false                                     // after mid-sentence punct
+        } else if following?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            shouldCapitalize = false                                     // mid-sentence insertion
         } else {
-            let trimmedPreceding = preceding.trimmingCharacters(in: .whitespaces)
-            if let lastChar = trimmedPreceding.last {
-                if ".?!…".contains(lastChar) {
-                    // Texto colado após `.`, `?`, `!`, `…` → primeira letra maiúscula.
-                    shouldCapitalize = true
-                } else if ",;:)]}/".contains(lastChar) {
-                    // Texto colado após `,`, `;`, `:`, `)`, `]`, `}`, `/` → primeira letra minúscula.
-                    shouldCapitalize = false
-                } else {
-                    let hasFollowingWord = following?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                    if hasFollowingWord {
-                        // Texto colado no meio de frase (há texto seguinte) → primeira letra minúscula.
-                        shouldCapitalize = false
-                    } else {
-                        // Não há regra forte, mantemos o que a LLM enviou.
-                        return text
-                    }
-                }
-            } else {
-                // O texto precedente era composto apenas de espaços em branco, logo estamos no início visual do campo.
-                shouldCapitalize = true
-            }
+            return text                                                  // no strong rule: keep LLM output
         }
 
-        if shouldCapitalize {
-            return first.uppercased() + text.dropFirst()
-        } else {
-            return first.lowercased() + text.dropFirst()
-        }
+        return shouldCapitalize
+            ? first.uppercased() + text.dropFirst()
+            : first.lowercased() + text.dropFirst()
     }
 
-    // MARK: - Pontuação Duplicada
+    // MARK: - Duplicate Punctuation
 
-    /// Implementa as regras de remoção de pontuação redundante gerada pela LLM.
-    /// - Texto colado termina com `.`, `?` ou `!` e texto seguinte começa com mesmo sinal → remover duplicado.
-    /// - Texto colado termina com `.` e texto seguinte começa com `,` ou `;` → remover o ponto.
+    /// Removes terminal punctuation when it duplicates or conflicts with what follows.
+    /// Rules: same punct already follows → remove; period before comma/semicolon → remove.
     private static func removeDuplicatePunctuation(_ text: String, following: String?) -> String {
-        guard let following = following, !following.isEmpty else { return text }
-        guard let textLastChar = text.last else { return text }
-        guard let follFirstChar = following.trimmingCharacters(in: .whitespaces).first else { return text }
+        guard
+            let following, !following.isEmpty,
+            let last = text.last,
+            let followFirst = following.trimmingCharacters(in: .whitespaces).first
+        else { return text }
 
-        // Texto colado termina com `.`, `?` ou `!` e texto seguinte começa com mesmo sinal → remover duplicado.
-        if ".?!".contains(textLastChar) && textLastChar == follFirstChar {
-            return String(text.dropLast())
-        }
-
-        // Texto colado termina com `.` e texto seguinte começa com `,` ou `;` → remover o ponto.
-        if textLastChar == "." && ",;".contains(follFirstChar) {
-            return String(text.dropLast())
-        }
+        if ".?!".contains(last) && last == followFirst { return String(text.dropLast()) }
+        if last == "." && ",;".contains(followFirst)   { return String(text.dropLast()) }
 
         return text
     }
-
 }
