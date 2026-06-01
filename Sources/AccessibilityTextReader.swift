@@ -75,6 +75,12 @@ enum AccessibilityTextReader {
 
         // Only sync if this looks like a web/Electron element with a potentially stale AX tree.
         guard isWebOrElectronElement(focused) else { return initial }
+        
+        // Safety guard: Do not run forceSyncAndRead if the user has an active selection.
+        // Doing so would use Cmd+Shift+Left and Right Arrow, which destroys the active selection.
+        if hasActiveSelection(focused) {
+            return initial
+        }
 
         return await syncWebAXTree(
             appElement: appElement,
@@ -127,8 +133,8 @@ enum AccessibilityTextReader {
         sendKey(source, secondKey, keyDown: true)
         sendKey(source, secondKey, keyDown: false)
 
-        // 50 ms is enough for most web engines to flush AX mutations.
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        // 100 ms is much safer for most web engines to flush AX mutations.
+        try? await Task.sleep(nanoseconds: 100_000_000)
 
         return await extract(from: focused, maxBefore: maxBefore, maxAfter: maxAfter)
     }
@@ -159,13 +165,21 @@ enum AccessibilityTextReader {
         // 1. Select to beginning of line
         sendKey(source, 123, command: true, shift: true, keyDown: true)
         sendKey(source, 123, command: true, shift: true, keyDown: false)
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        try? await Task.sleep(nanoseconds: 100_000_000)
 
         // 2. Copy selection
         pasteboard.clearContents()
+        let initialChangeCount = pasteboard.changeCount
+        
         sendKey(source, 8, command: true, shift: false, keyDown: true)
         sendKey(source, 8, command: true, shift: false, keyDown: false)
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        
+        // Wait for clipboard to populate by polling changeCount (max 300ms)
+        var elapsed = 0
+        while pasteboard.changeCount == initialChangeCount && elapsed < 300 {
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            elapsed += 10
+        }
 
         let precedingText = pasteboard.string(forType: .string)
 
@@ -182,7 +196,7 @@ enum AccessibilityTextReader {
         return .init(
             precedingText: precedingText?.isEmpty == false ? precedingText : nil,
             followingText: nil,
-            cursorPosition: precedingText?.isEmpty == false ? .middle : .start
+            cursorPosition: precedingText?.isEmpty == false ? .middle : .unknown
         )
     }
 

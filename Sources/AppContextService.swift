@@ -19,9 +19,9 @@ struct AppContext {
     let windowTitle: String?
     let selectedText: String?
     // Surrounding text captured by AccessibilityTextReader at recording time.
-    let precedingText: String?
-    let followingText: String?
-    let cursorPosition: String?
+    var precedingText: String?
+    var followingText: String?
+    var cursorPosition: String?
     let currentActivity: String
     let contextSystemPrompt: String?
     let contextPrompt: String?
@@ -106,7 +106,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         )
     }
 
-    func collectContext() async -> AppContext {
+    func collectContext(selectionSnapshot: AppSelectionSnapshot? = nil) async -> AppContext {
         let contextSystemPrompt = resolveContextPrompt()
 
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
@@ -132,7 +132,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
 
         let windowTitle = focusedWindowTitle(from: appElement) ?? appName
-        let selectedText = selectedText(from: appElement)
+        let selectedText = selectionSnapshot?.selectedText ?? self.selectedText(from: appElement)
 
         // Async read with automatic AX tree sync for Electron/web views.
         let surrounding = await AccessibilityTextReader.readSurroundingTextWithSync(from: appElement)

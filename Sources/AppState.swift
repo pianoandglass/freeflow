@@ -585,6 +585,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var activeRecordingTriggerMode: RecordingTriggerMode?
     private var currentSessionIntent: SessionIntent = .dictation
     private var pendingSelectionSnapshot: AppSelectionSnapshot?
+    private var currentSelectionSnapshot: AppSelectionSnapshot?
+
     private var pendingManualCommandInvocation = false
     private var pendingShortcutStartTask: Task<Void, Never>?
     private var pendingShortcutStartMode: RecordingTriggerMode?
@@ -1893,7 +1895,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func startRecording(triggerMode: RecordingTriggerMode) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
-        guard !isRecording && !isTranscribing else { return }
+        
+        if isTranscribing {
+            os_log(.info, log: recordingLog, "Interrupting ongoing transcription to start new recording")
+            transcriptionTask?.cancel()
+            transcriptionTask = nil
+            isTranscribing = false
+            endCriticalDictationActivity()
+            overlayManager.dismiss()
+        }
+        
+        guard !isRecording else { return }
         let scheduledSelectionSnapshot = pendingSelectionSnapshot
         let scheduledManualCommandInvocation = pendingManualCommandInvocation
         cancelPendingShortcutStart()
@@ -1933,6 +1945,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let selectionSnapshot = selectionSnapshot ?? contextService.collectSelectionSnapshot()
+        self.currentSelectionSnapshot = selectionSnapshot
         let manualCommandRequested = manualCommandRequested
             ?? hotkeyManager.currentPressedModifiers.contains(commandModeManualModifier.shortcutModifier)
         guard let resolvedIntent = resolveSessionIntent(
@@ -2547,15 +2560,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             self?.lastTranscript = bootstrapTranscript
                         }
                     }
-                    let appContext: AppContext
+                    var mutableAppContext: AppContext
                     if let sessionContext {
-                        appContext = sessionContext
+                        mutableAppContext = sessionContext
                     } else if let inFlightContext = await inFlightContextTask?.value {
-                        appContext = inFlightContext
+                        mutableAppContext = inFlightContext
                     } else {
-                        appContext = self.fallbackContextAtStop()
+                        mutableAppContext = self.fallbackContextAtStop()
                     }
                     try Task.checkCancellation()
+                    
+                    let appContext = mutableAppContext
+                    
                     await MainActor.run { [weak self] in
                         self?.debugStatusMessage = "Running post-processing"
                     }
@@ -2569,6 +2585,45 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         outputLanguage: self.outputLanguage
                     )
                     try Task.checkCancellation()
+
+                    // JUST-IN-TIME CONTEXT READ
+                    // If we had a selection but no context, we delete it NOW (right before pasting)
+                    // and read the exact surrounding text. The layout shift is masked by the immediate paste.
+                    var finalPreceding = appContext.precedingText
+                    var finalFollowing = appContext.followingText
+                    var finalCursorPos = appContext.cursorPosition
+                    var finalSelectedText = appContext.selectedText
+
+                    if let sel = appContext.selectedText, !sel.isEmpty, appContext.cursorPosition == "unknown" {
+                        let source = CGEventSource(stateID: .hidSystemState)
+                        if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 51, keyDown: true) { // Backspace
+                            keyDown.post(tap: .cghidEventTap)
+                        }
+                        if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 51, keyDown: false) {
+                            keyUp.post(tap: .cghidEventTap)
+                        }
+                        // Allow OS to process deletion before attempting to read context
+                        try? await Task.sleep(nanoseconds: 60_000_000)
+
+                        if let frontmostApp = NSWorkspace.shared.frontmostApplication {
+                            let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+                            let surrounding = await AccessibilityTextReader.readSurroundingTextWithSync(from: appElement)
+                            if surrounding.hasContext {
+                                finalPreceding = surrounding.precedingText
+                                finalFollowing = surrounding.followingText
+                                finalCursorPos = surrounding.cursorPosition.rawValue
+                            }
+                        }
+
+                        // Since we deleted the selection, the paste is now a pure insertion.
+                        // We update the variables so writeTranscriptToPasteboard will format it correctly.
+                        finalSelectedText = ""
+                    }
+
+                    let resolvedPreceding = finalPreceding
+                    let resolvedFollowing = finalFollowing
+                    let resolvedCursorPos = finalCursorPos
+                    let resolvedSelectedText = finalSelectedText
 
                     await MainActor.run {
                         guard self.isTranscribing else { return }
@@ -2641,10 +2696,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(
                                 trimmedFinalTranscript,
-                                precedingText: appContext.precedingText,
-                                followingText: appContext.followingText,
-                                selectedText: appContext.selectedText,
-                                cursorPosition: appContext.cursorPosition
+                                precedingText: resolvedPreceding,
+                                followingText: resolvedFollowing,
+                                selectedText: resolvedSelectedText,
+                                cursorPosition: resolvedCursorPos
                             )
                             self.pasteAtCursorWhenShortcutReleased {
                                 if shouldPressEnterAfterPaste {
@@ -2804,7 +2859,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         contextCaptureTask = Task { [weak self] in
             guard let self else { return nil }
-            let context = await self.contextService.collectContext()
+            let context = await self.contextService.collectContext(selectionSnapshot: self.currentSelectionSnapshot)
             await MainActor.run {
                 self.capturedContext = context
                 self.lastContextSummary = context.contextSummary

@@ -32,11 +32,14 @@ enum ContextualFormattingService {
         let precLastNonSpace = precTrimmed.last
         
         let isReplacement = !sel.isEmpty
+        let isUnknownContext = (cursorPosition == "unknown")
 
         // --- Punctuation cleanup ---
         
         // No period in the middle of a sentence.
-        if !prec.isEmpty, let pLast = precLastNonSpace, !".?!…".contains(pLast), text.hasSuffix(".") {
+        if isUnknownContext && text.hasSuffix(".") {
+            text.removeLast()
+        } else if !prec.isEmpty, let pLast = precLastNonSpace, !".?!…".contains(pLast), text.hasSuffix(".") {
             text.removeLast()
         }
         
@@ -66,8 +69,8 @@ enum ContextualFormattingService {
         // --- Capitalization (priority order, first match wins) ---
         var shouldCapitalize: Bool? = nil
         
-        if prec.isEmpty {
-            // Uppercase at the very beginning.
+        if prec.isEmpty && !isUnknownContext && !isReplacement {
+            // Uppercase at the very beginning of the field.
             shouldCapitalize = true
         } else if prec.range(of: #"(?:^|\n)\s*(?:[-*•–]|[a-zA-Z0-9]+[\.\)])\s+$"#, options: .regularExpression) != nil {
             // Uppercase after bullet/numbered list.
@@ -100,8 +103,12 @@ enum ContextualFormattingService {
                 shouldCapitalize = false
             }
         } else {
-            // Default to lowercase when continuing a sentence.
-            shouldCapitalize = false
+            // Default to lowercase when continuing a sentence, UNLESS we are in an unknown context replacement.
+            if isReplacement && isUnknownContext {
+                shouldCapitalize = nil // Respect LLM
+            } else {
+                shouldCapitalize = false
+            }
         }
         
         if let cap = shouldCapitalize {
@@ -153,6 +160,15 @@ enum ContextualFormattingService {
             // If preceding ends with space, we don't add leadingSpace to avoid duplicates.
             if prec.hasSuffix(" ") {
                 leadingSpace = ""
+            }
+        } else {
+            // If inserting inline (no selection), ensure a gap before following text.
+            if !fol.isEmpty, let fFirst = fol.first, !fFirst.isWhitespace {
+                if let scalar = UnicodeScalar(String(fFirst)), !closingPunct.contains(scalar) {
+                    if !text.hasSuffix(" ") {
+                        text += " "
+                    }
+                }
             }
         }
         
