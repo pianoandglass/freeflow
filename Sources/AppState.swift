@@ -2642,7 +2642,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(
                                 trimmedFinalTranscript,
                                 precedingText: appContext.precedingText,
-                                followingText: appContext.followingText
+                                followingText: appContext.followingText,
+                                selectedText: appContext.selectedText,
+                                cursorPosition: appContext.cursorPosition
                             )
                             self.pasteAtCursorWhenShortcutReleased {
                                 if shouldPressEnterAfterPaste {
@@ -3122,18 +3124,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// types for clipboard managers, and saving the clipboard state for later restoration.
     /// - Parameter transcript: The text to be pasted.
     /// - Returns: A `PendingClipboardRestore` object if clipboard preservation is enabled, otherwise nil.
-    private func writeTranscriptToPasteboard(_ transcript: String, precedingText: String? = nil, followingText: String? = nil) -> PendingClipboardRestore? {
+    private func writeTranscriptToPasteboard(_ transcript: String, precedingText: String? = nil, followingText: String? = nil, selectedText: String? = nil, cursorPosition: String? = nil) -> PendingClipboardRestore? {
         let pasteboard = NSPasteboard.general
         let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
         // Delegate formatting to deterministically adjust spacing, capitalization,
         // and punctuation based on the surrounding accessibility text context.
-        let formatted = ContextualFormattingService.format(
+        let textToWrite = ContextualFormattingService.format(
             transcript,
             precedingText: precedingText,
-            followingText: followingText
+            followingText: followingText,
+            selectedText: selectedText,
+            cursorPosition: cursorPosition
         )
-        let textToWrite = formatted.leadingSpace + formatted.text + formatted.trailingSpace
 
         // Declare standard transient types alongside .string so well-behaved
         // clipboard managers (Maccy, Raycast, Paste, Clipy, Flycut, etc.) skip

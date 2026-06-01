@@ -3,144 +3,179 @@ import Foundation
 // MARK: - ContextualFormattingService
 
 /// Applies deterministic post-LLM formatting using the surrounding cursor context (AX).
-/// When context is nil, each rule falls back to a safe default.
+/// Rules are applied strictly in the order: Normalization -> Punctuation -> Capitalization -> Spacing.
 enum ContextualFormattingService {
 
-    // MARK: - Public API
-
-    /// Main entry point. Rules applied in order:
-    /// strip trailing whitespace → remove duplicate punctuation → capitalize → compute spacing.
     static func format(
-        _ text: String,
+        _ insertedText: String,
         precedingText: String?,
-        followingText: String?
-    ) -> (text: String, leadingSpace: String, trailingSpace: String) {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !result.isEmpty else { return ("", "", "") }
-
-        result = removeDuplicatePunctuation(result, following: followingText)
-        result = applyCapitalization(result, preceding: precedingText, following: followingText)
-
-        return (result, leadingSpace(preceding: precedingText), trailingSpace(following: followingText))
-    }
-
-    // MARK: - Spacing
-
-    /// No leading space if preceding ends with whitespace or an opening bracket/quote.
-    /// Adds a space otherwise (after letters, numbers, or closing punctuation).
-    private static func leadingSpace(preceding: String?) -> String {
-        guard let preceding, !preceding.isEmpty, let last = preceding.last else { return "" }
-        return last.isWhitespace || "([{\"'".contains(last) ? "" : " "
-    }
-
-    /// No trailing space if following starts with whitespace, punctuation, or a closing bracket/quote.
-    private static func trailingSpace(following: String?) -> String {
-        guard let following, !following.isEmpty, let first = following.first else { return "" }
-        return first.isWhitespace || ")]},.?!;:'\"".contains(first) ? "" : " "
-    }
-
-    // MARK: - Capitalization
-
-    private static func applyCapitalization(
-        _ text: String,
-        preceding: String?,
-        following: String?
+        followingText: String?,
+        selectedText: String? = nil,
+        cursorPosition: String? = nil
     ) -> String {
-        guard let first = text.first, let preceding else { return text }
+        // Log the exact values of surrounding context.
+        print("[ContextualFormattingService] format() called. precedingText: '\(precedingText ?? "nil")', followingText: '\(followingText ?? "nil")'")
 
-        let cap = { first.uppercased() + text.dropFirst() }
-        let low = { first.lowercased() + text.dropFirst() }
+        // --- Normalization ---
+        // Remove surrounding spaces.
+        var text = insertedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return "" }
+        
+        let prec = precedingText ?? ""
+        let fol = followingText ?? ""
+        let folTrimmed = fol.trimmingCharacters(in: .whitespaces)
+        let folFirstNonSpace = folTrimmed.first
+        
+        let sel = selectedText ?? ""
+        
+        let precTrimmed = prec.trimmingCharacters(in: .whitespaces)
+        let precLastNonSpace = precTrimmed.last
+        
+        let isReplacement = !sel.isEmpty
 
-        // RULE 1: List marker -> UPPER
-        if preceding.range(of: #"(?:^|\n)\s*(?:[-*•–]|[a-zA-Z0-9]+[\.\)])\s+$"#, options: .regularExpression) != nil {
-            return cap()
+        // --- Punctuation cleanup ---
+        
+        // No period in the middle of a sentence.
+        if !prec.isEmpty, let pLast = precLastNonSpace, !".?!…".contains(pLast), text.hasSuffix(".") {
+            text.removeLast()
         }
-
-        // RULE 2: New line or paragraph -> UPPER
-        if preceding.hasSuffix("\n") {
-            return cap()
+        
+        // Period before these symbols is never correct.
+        if text.hasSuffix("."), let f = folFirstNonSpace, "—,;".contains(f) {
+            text.removeLast()
         }
+        
+        // Collapse duplicate punctuation.
+        if let last = text.last, ".?!".contains(last), let f = folFirstNonSpace, last == f {
+            text.removeLast()
+        }
+        
+        // Standardize ellipsis: only exactly "..." is kept. Any other runs become ".".
+        text = text.replacingOccurrences(of: "(?<!\\.)\\.{4,}(?!\\.)", with: ".", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?<!\\.)\\.{2}(?!\\.)", with: ".", options: .regularExpression)
+        
+        // Avoid "word., nextWord" when the user overwrites a fragment.
+        if isReplacement, let last = text.last, ".,;:!?…".contains(last), let f = folFirstNonSpace, f.isLetter || f.isNumber {
+            text.removeLast()
+        }
+        
+        // Keep multiple exclamation marks (implicitly handled).
 
-        let trimmed = preceding.trimmingCharacters(in: .whitespaces)
-        if let last = trimmed.last {
-            // RULE 3: After sentence break -> UPPER
-            if ".?!…".contains(last) {
-                return cap()
+        if text.isEmpty { return "" }
+
+        // --- Capitalization (priority order, first match wins) ---
+        var shouldCapitalize: Bool? = nil
+        
+        if prec.isEmpty {
+            // Uppercase at the very beginning.
+            shouldCapitalize = true
+        } else if prec.range(of: #"(?:^|\n)\s*(?:[-*•–]|[a-zA-Z0-9]+[\.\)])\s+$"#, options: .regularExpression) != nil {
+            // Uppercase after bullet/numbered list.
+            shouldCapitalize = true
+        } else if prec.hasSuffix("\n") {
+            // Uppercase after line break.
+            shouldCapitalize = true
+        } else if let last = precLastNonSpace, ".?!…".contains(last) {
+            // Uppercase after end of sentence.
+            shouldCapitalize = true
+        } else if let last = precLastNonSpace, ",;:".contains(last) {
+            // Lowercase after these punctuation marks.
+            shouldCapitalize = false
+        } else if let last = precLastNonSpace, ")]}".contains(last) {
+            // Lowercase after a closing bracket.
+            shouldCapitalize = false
+        } else if let last = precLastNonSpace, "/—".contains(last) {
+            // Lowercase after slash/dash, with leading-dash exception.
+            if last == "—" && precTrimmed.count == 1 {
+                shouldCapitalize = true
+            } else {
+                shouldCapitalize = false
             }
-
-            // RULE 4: After comma, semicolon, colon -> LOWER
-            if ",;:".contains(last) {
-                return low()
+        } else if let last = prec.last, "\"'".contains(last) {
+            // Capitalize only when the quote follows the end of a sentence.
+            let beforeQuote = prec.dropLast().trimmingCharacters(in: .whitespaces)
+            if let charBefore = beforeQuote.last, ".?!…\n".contains(charBefore) {
+                shouldCapitalize = true
+            } else {
+                shouldCapitalize = false
             }
-
-            // RULE 5: After closing paren, bracket, brace -> LOWER
-            if ")]}".contains(last) {
-                return low()
-            }
-
-            // RULE 6: After slash or dash -> LOWER (Exception: first char -> UPPER)
-            if last == "/" || last == "—" || last == "-" {
-                if (last == "—" || last == "-") && trimmed.count == 1 {
-                    return cap()
-                }
-                return low()
-            }
-
-            // RULE 7: After opening quote -> INHERIT
-            if last == "\"" || last == "'" {
-                let beforeQuote = trimmed.dropLast().trimmingCharacters(in: .whitespaces)
-                if let charBefore = beforeQuote.last {
-                    if ".?!…\n".contains(charBefore) {
-                        return cap()
-                    } else {
-                        return low()
-                    }
-                } else {
-                    return cap()
-                }
+        } else {
+            // Default to lowercase when continuing a sentence.
+            shouldCapitalize = false
+        }
+        
+        if let cap = shouldCapitalize {
+            if let firstAlphaIndex = text.firstIndex(where: { $0.isLetter }) {
+                let firstAlpha = text[firstAlphaIndex]
+                let replacement = cap ? firstAlpha.uppercased() : firstAlpha.lowercased()
+                text.replaceSubrange(firstAlphaIndex...firstAlphaIndex, with: replacement)
             }
         }
-
-        // RULE 8: Mid-sentence insertion -> LOWER
-        if following?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return low()
+        
+        // --- Spacing ---
+        var leadingSpace = ""
+        
+        let textFirstNonSpace = text.first { !$0.isWhitespace }
+        
+        let openingPunct = CharacterSet(charactersIn: "({[“‘\"'")
+        let closingPunct = CharacterSet(charactersIn: ")]},.!?;:")
+        
+        // Guarantees a normal word gap.
+        if let pLast = precLastNonSpace, let tFirst = textFirstNonSpace {
+            if (pLast.isLetter || pLast.isNumber) && (tFirst.isLetter || tFirst.isNumber) {
+                leadingSpace = " "
+            }
         }
-
-        // RULE 9: Absolute start of field -> UPPER
-        if preceding.isEmpty {
-            return cap()
+        
+        // Standard spacing after these marks.
+        if let pLast = precLastNonSpace, ",;:.?!…".contains(pLast) {
+            leadingSpace = " "
         }
-
-        return text
-    }
-
-    // MARK: - Duplicate Punctuation
-
-    private static func removeDuplicatePunctuation(_ text: String, following: String?) -> String {
-        var result = text
-        guard let following, !following.isEmpty else { return result }
-        let followFirst = following.trimmingCharacters(in: .whitespaces).first
-
-        // REGRA P1: Remover ponto final em inserção no meio de frase
-        if result.last == ".", let f = followFirst, f.isLetter || f.isNumber {
-            result = String(result.dropLast())
+        
+        // Avoid space before "(", "[", "{", quotes, etc.
+        if let pLast = precLastNonSpace, let scalar = UnicodeScalar(String(pLast)), openingPunct.contains(scalar) {
+            leadingSpace = ""
         }
-
-        // REGRA P2: Remover ponto final antes de travessão
-        if result.last == ".", let f = followFirst, f == "—" || f == "-" {
-            result = String(result.dropLast())
+        
+        // Avoid space before ")", "]", "}", ".", ",", etc.
+        if let tFirst = textFirstNonSpace, let scalar = UnicodeScalar(String(tFirst)), closingPunct.contains(scalar) {
+            leadingSpace = ""
         }
-
-        // REGRA P3: Remover pontuação duplicada
-        if let last = result.last, ".?!".contains(last), let f = followFirst, last == f {
-            result = String(result.dropLast())
+        
+        // No space before closing punctuation in the following text.
+        if let fFirst = folFirstNonSpace, let scalar = UnicodeScalar(String(fFirst)), closingPunct.contains(scalar) {
+            // Previously handled by trailingSpace
         }
-
-        // REGRA P4: Remover ponto antes de vírgula ou ponto e vírgula
-        if result.last == ".", let f = followFirst, ",;".contains(f) {
-            result = String(result.dropLast())
+        
+        // Guarantees clean junction when overwriting selected text.
+        if isReplacement {
+            // We already trimmed insertedText, so it doesn't start with space.
+            // If preceding ends with space, we don't add leadingSpace to avoid duplicates.
+            if prec.hasSuffix(" ") {
+                leadingSpace = ""
+            }
         }
-
-        return result
+        
+        // Handle pre-existing document spaces safely.
+        if let last = prec.last, last.isWhitespace {
+            leadingSpace = ""
+        }
+        
+        // Preserve selected spaces: if the user selected a leading or trailing space,
+        // we must restore it because the system paste replaces the entire selection.
+        if !sel.isEmpty {
+            if sel.hasPrefix(" ") && leadingSpace.isEmpty && !prec.hasSuffix(" ") {
+                leadingSpace = " "
+            }
+            if sel.hasSuffix(" ") && !text.hasSuffix(" ") && !fol.hasPrefix(" ") {
+                text += " "
+            }
+        }
+        
+        // Normalizes internal spacing.
+        var finalString = leadingSpace + text
+        finalString = finalString.replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+        
+        return finalString
     }
 }

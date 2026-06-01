@@ -391,7 +391,9 @@ Use these spellings exactly in the output when relevant:
         }
 
         let userMessage = """
-Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Do not include PRECEDING_TEXT or FOLLOWING_TEXT in your output. Return EMPTY if there should be no result.
+Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes.
+CRITICAL: Do NOT include any words from PRECEDING_TEXT or FOLLOWING_TEXT in your output! You will be penalized if you copy the surrounding text into the final transcription.
+Return EMPTY if there should be no result.
 
 CONTEXT: "\(context.contextSummary)"
 
