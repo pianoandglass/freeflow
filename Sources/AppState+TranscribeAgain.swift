@@ -25,6 +25,9 @@ enum TranscribeAgainError: LocalizedError {
 
 extension AppState {
 
+    /// Logger for transcription retry events
+    internal static let retryLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+
     /// Destination behavior for a transcription retry
     enum RetryAction: Sendable {
         case pasteAtCursor
@@ -164,7 +167,7 @@ private extension AppState {
                 )
             } catch {
                 // If fast-path fails (e.g., LLM timeout), fall back to slow-path full context reconstruction.
-                os_log(.error, log: recordingLog, "Prompt replay fast-path failed: %{public}@. Falling back to full pipeline reconstruction.", error.localizedDescription)
+                os_log(.error, log: AppState.retryLog, "Prompt replay fast-path failed: %{public}@. Falling back to full pipeline reconstruction.", error.localizedDescription)
             }
         }
 
@@ -362,7 +365,7 @@ private extension AppState {
             try pipelineHistoryStore.update(updatedItem)
             pipelineHistory = pipelineHistoryStore.loadAllHistory()
         } catch {
-            os_log(.error, log: recordingLog, "Failed to update pipeline history store during retry failure: %{public}@", error.localizedDescription)
+            os_log(.error, log: AppState.retryLog, "Failed to update pipeline history store during retry failure: %{public}@", error.localizedDescription)
         }
         errorMessage = "Retry failed: \(error.localizedDescription)"
         retryingItemIDs.remove(item.id)
