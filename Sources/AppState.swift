@@ -1612,12 +1612,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return false
     }
 
+    // Starts monitoring system-wide hotkeys and binds event handlers
     func startHotkeyMonitoring() {
         shouldMonitorHotkeys = true
         hotkeyManager.onShortcutEvent = { [weak self] event in
-            DispatchQueue.main.async {
-                self?.handleShortcutEvent(event)
-            }
+            self?.handleShortcutEvent(event) ?? false
         }
         hotkeyManager.onEscapeKeyPressed = { [weak self] in
             self?.handleEscapeKeyPress() ?? false
@@ -1674,28 +1673,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func handleShortcutEvent(_ event: ShortcutEvent) {
+    // Handles a shortcut event and returns true if the event was consumed
+    @discardableResult
+    private func handleShortcutEvent(_ event: ShortcutEvent) -> Bool {
         if event == .copyAgainTriggered {
             copyLastTranscriptToPasteboard()
-            return
+            return true
         }
 
         guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
-            return
+            return false
         }
 
         switch action {
+        case .consumeOnly:
+            return true
         case .start(let mode):
             os_log(.info, log: recordingLog, "Shortcut start fired for mode %{public}@", mode.rawValue)
             scheduleShortcutStart(mode: mode)
+            return false
         case .stop:
             cancelPendingShortcutStart()
             guard isRecording else {
                 shortcutSessionController.reset()
                 activeRecordingTriggerMode = nil
-                return
+                return true
             }
             stopAndTranscribe()
+            return true
         case .switchedToToggle:
             if isRecording {
                 activeRecordingTriggerMode = .toggle
@@ -1703,6 +1708,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             } else if pendingShortcutStartMode != nil {
                 pendingShortcutStartMode = .toggle
             }
+            return false
         }
     }
 
