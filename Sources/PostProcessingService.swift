@@ -124,8 +124,8 @@ Behavior:
 - Do not treat VOICE_COMMAND as dictation to clean up and paste directly.
 """
 
-    private let apiKey: String
-    private let baseURL: String
+    let apiKey: String
+    let baseURL: String
     private let preferredModel: String
     private let preferredFallbackModel: String
     private let defaultModel = "openai/gpt-oss-20b"
@@ -603,7 +603,7 @@ Model: \(model)
         prompt + "\n\nIMPORTANT: Translate the final cleaned text into \(language). Output ONLY in \(language), regardless of the original spoken language."
     }
 
-    private func sanitizePostProcessedTranscript(_ value: String) -> String {
+    func sanitizePostProcessedTranscript(_ value: String) -> String {
         var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { return "" }
 
@@ -622,7 +622,7 @@ Model: \(model)
         return result
     }
 
-    private func sanitizeCommandModeTranscript(_ value: String) -> String {
+    func sanitizeCommandModeTranscript(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
