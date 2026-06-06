@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os.log
 
 // MARK: - Transcribe Again Errors
 
@@ -163,7 +164,7 @@ private extension AppState {
                 )
             } catch {
                 // If fast-path fails (e.g., LLM timeout), fall back to slow-path full context reconstruction.
-                print("Prompt replay fast-path failed: \(error). Falling back to full pipeline reconstruction.")
+                os_log(.error, log: recordingLog, "Prompt replay fast-path failed: %{public}@. Falling back to full pipeline reconstruction.", error.localizedDescription)
             }
         }
 
@@ -360,7 +361,9 @@ private extension AppState {
         do {
             try pipelineHistoryStore.update(updatedItem)
             pipelineHistory = pipelineHistoryStore.loadAllHistory()
-        } catch {}
+        } catch {
+            os_log(.error, log: recordingLog, "Failed to update pipeline history store during retry failure: %{public}@", error.localizedDescription)
+        }
         errorMessage = "Retry failed: \(error.localizedDescription)"
         retryingItemIDs.remove(item.id)
     }

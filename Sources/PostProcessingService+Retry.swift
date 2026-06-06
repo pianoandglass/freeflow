@@ -2,24 +2,23 @@ import Foundation
 
 extension PostProcessingService {
     // Retries post-processing using a saved prompt template and the specified model.
+    // Utilizes a task group to enforce the timeout interval and cancel pending requests.
     func retryWithPrompt(
         systemPrompt: String,
         userMessage: String,
         model: String,
         isCommandMode: Bool
     ) async throws -> PostProcessingResult {
-        guard let url = URL(string: "\(baseURL)/chat/completions") else {
-            throw PostProcessingError.invalidResponse("Invalid API base URL: \(baseURL)")
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let timeoutSeconds = postProcessingTimeoutSeconds
         
-        let timeoutSeconds = UserDefaults.standard.double(forKey: "post_processing_timeout_seconds")
-        request.timeoutInterval = timeoutSeconds > 0 ? timeoutSeconds : 20
-        
-        let promptForDisplay = """
+        return try await withThrowingTaskGroup(of: PostProcessingResult.self) { group in
+            // Add the main API request task to the group
+            group.addTask { [weak self] in
+                guard let self else {
+                    throw PostProcessingError.invalidResponse("Post-processing service deallocated")
+                }
+                
+                let promptForDisplay = """
 Model: \(model)
 
 [System]
@@ -28,75 +27,63 @@ Model: \(model)
 [User]
 \(userMessage)
 """
-        
-        var payload: [String: Any] = [
-            "model": model,
-            "temperature": 0.0,
-            "messages": [
-                [
-                    "role": "system",
-                    "content": systemPrompt
-                ],
-                [
-                    "role": "user",
-                    "content": userMessage
+                
+                var payload: [String: Any] = [
+                    "model": model,
+                    "temperature": 0.0,
+                    "messages": [
+                        [
+                            "role": "system",
+                            "content": systemPrompt
+                        ],
+                        [
+                            "role": "user",
+                            "content": userMessage
+                        ]
+                    ]
                 ]
-            ]
-        ]
-        
-        let config = ModelConfiguration.config(for: model)
-        if let maxTokens = config.maxCompletionTokens {
-            payload["max_completion_tokens"] = maxTokens
-        } else if model == "openai/gpt-oss-20b" {
-            payload["max_completion_tokens"] = 4096
+                
+                // Fetch the configuration for the chosen model
+                let config = ModelConfiguration.config(for: model)
+                // Apply fallback parameters if necessary
+                self.applyModelConfigAndFallbacks(to: &payload, model: model, config: config)
+                
+                // Execute API request using the shared transport helper
+                let content = try await self.executeAPIRequest(
+                    payload: payload,
+                    config: config,
+                    timeoutInterval: timeoutSeconds
+                )
+                
+                // Sanitize transcript based on active command/dictation mode
+                let sanitizedTranscript = isCommandMode
+                    ? self.sanitizeCommandModeTranscript(content)
+                    : self.sanitizePostProcessedTranscript(content)
+                
+                return PostProcessingResult(
+                    transcript: sanitizedTranscript,
+                    prompt: promptForDisplay
+                )
+            }
+            
+            // Add the timeout monitor task to the group
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw PostProcessingError.requestTimedOut(timeoutSeconds)
+            }
+            
+            do {
+                // Return the first task to finish (either successful API response or timeout)
+                guard let result = try await group.next() else {
+                    throw PostProcessingError.invalidResponse("No post-processing result")
+                }
+                group.cancelAll()
+                return result
+            } catch {
+                // Ensure all remaining tasks in the group are cancelled on failure
+                group.cancelAll()
+                throw error
+            }
         }
-        if let effort = config.reasoningEffort {
-            payload["reasoning_effort"] = effort
-        } else if model == "openai/gpt-oss-20b" {
-            payload["reasoning_effort"] = "low"
-        }
-        if let include = config.includeReasoning {
-            payload["include_reasoning"] = include
-        } else if model == "openai/gpt-oss-20b" {
-            payload["include_reasoning"] = false
-        }
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-        
-        let (data, response) = try await LLMAPITransport.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw PostProcessingError.invalidResponse("No HTTP response")
-        }
-        
-        guard httpResponse.statusCode == 200 else {
-            let message = String(data: data, encoding: .utf8) ?? ""
-            throw PostProcessingError.requestFailed(httpResponse.statusCode, message)
-        }
-        
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let rawContent = message["content"] as? String else {
-            throw PostProcessingError.invalidResponse("Missing choices[0].message.content")
-        }
-        
-        var content = rawContent
-        if config.shouldStripThinkTags {
-            content = ModelConfiguration.stripThinkTags(content)
-        }
-        
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw PostProcessingError.emptyOutput
-        }
-        
-        let sanitizedTranscript = isCommandMode
-            ? sanitizeCommandModeTranscript(content)
-            : sanitizePostProcessedTranscript(content)
-        
-        return PostProcessingResult(
-            transcript: sanitizedTranscript,
-            prompt: promptForDisplay
-        )
     }
 }

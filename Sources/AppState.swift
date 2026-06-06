@@ -7,7 +7,7 @@ import ApplicationServices
 import ScreenCaptureKit
 import Carbon
 import os.log
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
 
 struct VoiceMacro: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
