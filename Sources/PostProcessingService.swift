@@ -522,7 +522,7 @@ Model: \(model)
     /// Performs the network API call to the LLM backend, handles HTTP responses, and extracts the response string.
     internal func executeAPIRequest(
         payload: [String: Any],
-        config: ModelConfiguration,
+        config: ModelConfig,
         timeoutInterval: TimeInterval
     ) async throws -> String {
         guard let url = URL(string: "\(baseURL)/chat/completions") else {
@@ -566,7 +566,7 @@ Model: \(model)
     }
 
     /// Sets token limits and fallback configurations on the request payload.
-    internal func applyModelConfigAndFallbacks(to payload: inout [String: Any], model: String, config: ModelConfiguration) {
+    internal func applyModelConfigAndFallbacks(to payload: inout [String: Any], model: String, config: ModelConfig) {
         if let maxTokens = config.maxCompletionTokens {
             payload["max_completion_tokens"] = maxTokens
         } else if model == defaultModel {
