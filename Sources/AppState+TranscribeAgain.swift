@@ -145,31 +145,6 @@ private extension AppState {
             selectedText: item.selectedText
         )
 
-        // Fast path: Replay from saved prompt with injected new transcript
-        if let savedPrompt = item.postProcessingPrompt,
-           let parsed = parseRetryPrompt(savedPrompt) {
-            
-            let newUserMessage = injectNewTranscript(into: parsed.user, newTranscript: parsedTranscript.transcript)
-            
-            do {
-                let result = try await service.retryWithPrompt(
-                    systemPrompt: parsed.system,
-                    userMessage: newUserMessage,
-                    model: model,
-                    isCommandMode: restoredIntent.isCommandMode
-                )
-                
-                return RetryResult(
-                    transcript: result.transcript,
-                    prompt: result.prompt,
-                    status: "Post-processing succeeded (retried from log)",
-                    rawTranscript: rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                )
-            } catch {
-                // If fast-path fails (e.g., LLM timeout), fall back to slow-path full context reconstruction.
-                os_log(.error, log: AppState.retryLog, "Prompt replay fast-path failed: %{public}@. Falling back to full pipeline reconstruction.", error.localizedDescription)
-            }
-        }
 
         let restoredContext = AppContext(
             appName: item.contextAppName,
@@ -250,50 +225,6 @@ private extension AppState {
         }
     }
 
-    /// Parses the saved prompt string into system and user components
-    func parseRetryPrompt(_ prompt: String) -> (system: String, user: String)? {
-        guard let userRange = prompt.range(of: "\n[User]\n") else { return nil }
-        let userMessage = String(prompt[userRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let firstPart = prompt[..<userRange.lowerBound]
-        let systemMarker = "[System]\n"
-        let systemPrompt: String
-        
-        if let systemRange = firstPart.range(of: "\n" + systemMarker) {
-            systemPrompt = String(firstPart[systemRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if firstPart.hasPrefix(systemMarker) {
-            systemPrompt = String(firstPart[systemMarker.endIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let systemRange = firstPart.range(of: systemMarker) {
-            systemPrompt = String(firstPart[systemRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            return nil
-        }
-
-        return (systemPrompt, userMessage)
-    }
-
-    /// Injects the newly transcribed text into the existing SQLite user prompt payload
-    func injectNewTranscript(into userMessage: String, newTranscript: String) -> String {
-        let prefix = "RAW_TRANSCRIPTION: \""
-        guard let startRange = userMessage.range(of: prefix) else { return userMessage }
-        
-        // Find the exact boundaries of the original raw transcription
-        let suffix = "\"\nFOLLOWING_TEXT:"
-        if let endRange = userMessage.range(of: suffix, range: startRange.upperBound..<userMessage.endIndex) {
-            let before = userMessage[..<startRange.upperBound]
-            let after = userMessage[endRange.lowerBound...]
-            return String(before) + newTranscript + String(after)
-        }
-        
-        // Fallback: Use the last quotation mark if FOLLOWING_TEXT is not present
-        if let lastQuoteIndex = userMessage.lastIndex(of: "\""), lastQuoteIndex > startRange.upperBound {
-            let before = userMessage[..<startRange.upperBound]
-            let after = userMessage[lastQuoteIndex...]
-            return String(before) + newTranscript + String(after)
-        }
-        
-        return userMessage
-    }
 
     /// Persists updated history and dispatches the retry action on success
     @MainActor
