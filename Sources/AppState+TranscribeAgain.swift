@@ -151,6 +151,9 @@ private extension AppState {
             bundleIdentifier: item.contextBundleIdentifier,
             windowTitle: item.contextWindowTitle,
             selectedText: item.selectedText,
+            precedingText: item.precedingText,
+            followingText: item.followingText,
+            cursorPosition: nil,
             currentActivity: item.contextSummary,
             contextSystemPrompt: item.contextSystemPrompt,
             contextPrompt: item.contextPrompt,
@@ -250,7 +253,9 @@ private extension AppState {
             audioFileName: item.audioFileName,
             contextAppName: item.contextAppName,
             contextBundleIdentifier: item.contextBundleIdentifier,
-            contextWindowTitle: item.contextWindowTitle
+            contextWindowTitle: item.contextWindowTitle,
+            precedingText: item.precedingText,
+            followingText: item.followingText
         )
         do {
             try pipelineHistoryStore.update(updatedItem)
@@ -290,7 +295,9 @@ private extension AppState {
             audioFileName: item.audioFileName,
             contextAppName: item.contextAppName,
             contextBundleIdentifier: item.contextBundleIdentifier,
-            contextWindowTitle: item.contextWindowTitle
+            contextWindowTitle: item.contextWindowTitle,
+            precedingText: item.precedingText,
+            followingText: item.followingText
         )
         do {
             try pipelineHistoryStore.update(updatedItem)
