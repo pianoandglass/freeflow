@@ -82,12 +82,12 @@ struct PipelineHistoryItem: Identifiable, Codable {
     }
 
     var canRetry: Bool {
-        if let prompt = postProcessingPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
-        }
         if !rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
         }
-        return audioFileName != nil
+        if let audioFileName {
+            return !audioFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return false
     }
 }
