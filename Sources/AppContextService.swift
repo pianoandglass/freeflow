@@ -333,8 +333,8 @@ Selected text: \(selectedText ?? "None")
         case .off:
             return ""
         case .metadata:
-            // One AX read: host / web-capable / address-bar focus.
-            let web = AppContextSource.webContext()
+            // One AX read: host / web-capable / address-bar focus (skips if the frontmost app changed).
+            let web = AppContextSource.webContext(expectedBundleID: bundleIdentifier)
             return AppContextSource.metadataSummary(
                 appName: appName,
                 pageTitle: windowTitle,

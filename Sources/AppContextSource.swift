@@ -102,6 +102,11 @@ enum AppContextSource {
         let app = (appName?.isEmpty == false) ? appName! : "the active app"
         let title = cleanedPageTitle(pageTitle, appName: appName, host: webHost)
 
+        // Address bar focused → you're typing a URL/search, not into the page; check before the host.
+        if addressBarFocused {
+            return "User is dictating in the \(app) address bar"
+        }
+
         if let webHost, !webHost.isEmpty {
             // Drop "in <app>" when the host already names the app (e.g. the ChatGPT web app).
             let base = hostMatchesApp(webHost, appName: appName)
@@ -109,10 +114,6 @@ enum AppContextSource {
                 : "User is dictating on \(webHost) in \(app)"
             if let title { return "\(base) (\"\(title)\")" }
             return base
-        }
-
-        if addressBarFocused {
-            return "User is dictating in the \(app) address bar"
         }
 
         // Web app whose URL the browser doesn't expose (e.g. Firefox/Zen) — use the page title.
@@ -189,12 +190,15 @@ enum AppContextSource {
     private static let maxParentHops = 12
 
     /// Reads one dictation's web context: page host (if readable), whether the app renders web content,
-    /// and whether the address/search bar is focused. Reads `frontmostApplication` independently (the
-    /// caller can't pass an element down without touching the byte-identical `collectContext`); the gap
-    /// is synchronous, so the app is effectively stable.
-    static func webContext() -> (host: String?, isWebApp: Bool, addressBarFocused: Bool) {
+    /// and whether the address/search bar is focused. Reads `frontmostApplication` here (the caller can't
+    /// pass the element down without editing the byte-identical `collectContext`), but bails when the
+    /// frontmost app no longer matches `expectedBundleID`, so it never mixes another app's page into a
+    /// summary captured for a different app.
+    static func webContext(expectedBundleID: String?) -> (host: String?, isWebApp: Bool, addressBarFocused: Bool) {
         guard AXIsProcessTrusted() else { return (nil, false, false) }
         guard let app = NSWorkspace.shared.frontmostApplication else { return (nil, false, false) }
+        // Focus changed since collectContext captured the app → don't read a different app's page.
+        if let expectedBundleID, app.bundleIdentifier != expectedBundleID { return (nil, false, false) }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
 
         // Opt Chromium/Electron apps into exposing their AX tree (harmless for apps that already do).
