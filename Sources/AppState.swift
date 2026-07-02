@@ -1989,11 +1989,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         os_log(.info, log: recordingLog, "startRecording() entered")
         guard !isRecording && !isTranscribing else { return }
         
-        // JIT Accessibility Wake-up: Force Chromium/Electron apps to keep their accessibility
-        // tree updated during the dictation window. This prevents the (0,0) cursor bug.
-        Task { @MainActor in
-            AccessibilityWakeManager.shared.wakeUpCurrentApp()
-        }
         let scheduledSelectionSnapshot = pendingSelectionSnapshot
         let scheduledManualCommandInvocation = pendingManualCommandInvocation
         cancelPendingShortcutStart()
@@ -2008,6 +2003,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         guard ensureMicrophoneAccess() else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         applyAudioInterruptionIfNeeded()
+        // JIT Accessibility Wake-up: Force Chromium/Electron apps to keep their accessibility
+        // tree updated during the dictation window. This prevents the (0,0) cursor bug. Runs
+        // only after the start guards succeed, so a failed start can't leave the tree woken.
+        Task { @MainActor in
+            AccessibilityWakeManager.shared.wakeUpCurrentApp()
+        }
         beginRecording(triggerMode: triggerMode)
         startGentleStartContextRead()
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
@@ -2852,8 +2853,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         (a?.contains(where: { !$0.isWhitespace }) ?? false)
                             || (b?.contains(where: { !$0.isWhitespace }) ?? false)
                     }
-                    let startSnapshotForGate = await startSurroundingHandle?.value
-                    let startSnapshotBlind = !hasRealText(startSnapshotForGate?.precedingText, startSnapshotForGate?.followingText)
+                    // Await the start snapshot only when the stop read came back unknown —
+                    // an unconditional await could hold the paste behind a slow AX read.
+                    let startSnapshotBlind: Bool
+                    if finalCursorPos == "unknown" {
+                        let startSnapshotForGate = await startSurroundingHandle?.value
+                        startSnapshotBlind = !hasRealText(startSnapshotForGate?.precedingText, startSnapshotForGate?.followingText)
+                    } else {
+                        startSnapshotBlind = false   // unused when the cursor is known; skip the await
+                    }
 
                     if finalCursorPos == "unknown", startSnapshotBlind {
                         os_log(.info, log: recordingLog, "JIT re-read triggered: cursorPos=unknown")

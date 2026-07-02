@@ -579,13 +579,19 @@ enum AccessibilityTextReader {
               let idx = (copyParam(element, "AXIndexForTextMarker", caretMarker) as? NSNumber)?.intValue, idx >= 0 else {
             return nil
         }
+        // For a SELECTION (not a plain caret) the following slice must start at the selection END,
+        // or the selected text would leak into followingText on replacements. Falls back to the
+        // start index when the end marker can't be resolved (plain caret: both indexes are equal).
+        let endIdx = endMarker(of: selRange, element: element)
+            .flatMap { (copyParam(element, "AXIndexForTextMarker", $0) as? NSNumber)?.intValue }
+            .map { max(idx, $0) } ?? idx
         let total   = (copyAttr(element, "AXNumberOfCharacters") as? NSNumber)?.intValue
         let precLoc = max(0, idx - maxBefore)
         let precLen = idx - precLoc
-        let follLen = total.map { max(0, min(maxAfter, $0 - idx)) } ?? maxAfter
+        let follLen = total.map { max(0, min(maxAfter, $0 - endIdx)) } ?? maxAfter
         // A zero-length side is a genuine "nothing here" — not a successful read.
         let prec = precLen > 0 ? stringForCharRange(element, location: precLoc, length: precLen) : ""
-        let foll = follLen > 0 ? stringForCharRange(element, location: idx, length: follLen) : ""
+        let foll = follLen > 0 ? stringForCharRange(element, location: endIdx, length: follLen) : ""
         guard (precLen > 0 && prec != nil) || (follLen > 0 && foll != nil) else { return nil }
         let position: SurroundingTextSnapshot.CursorPosition =
             idx <= 0 ? .start : ((total.map { idx >= $0 } ?? false) ? .end : .middle)

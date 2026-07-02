@@ -106,7 +106,7 @@ final class PipelineHistoryStore {
                 entity.formattedTranscript = item.formattedTranscript
                 entity.cursorPosition = item.cursorPosition
                 entity.contextFormatRule = item.contextFormatRule
-                entity.isBlindApp = NSNumber(value: item.isBlindApp ?? false)
+                entity.isBlindApp = item.isBlindApp.map { NSNumber(value: $0) }   // keep nil (legacy rows) distinct from false
                 entity.extractionMethod = item.extractionMethod
                 entity.appKind = item.appKind
                 try saveContext()
@@ -223,7 +223,7 @@ final class PipelineHistoryStore {
                 entity.formattedTranscript = item.formattedTranscript
                 entity.cursorPosition = item.cursorPosition
                 entity.contextFormatRule = item.contextFormatRule
-                entity.isBlindApp = NSNumber(value: item.isBlindApp ?? false)
+                entity.isBlindApp = item.isBlindApp.map { NSNumber(value: $0) }   // keep nil (legacy rows) distinct from false
                 entity.extractionMethod = item.extractionMethod
                 entity.appKind = item.appKind
                 try saveContext()
@@ -309,7 +309,7 @@ final class PipelineHistoryStore {
             formattedTranscript: entity.formattedTranscript,
             cursorPosition: entity.cursorPosition,
             contextFormatRule: entity.contextFormatRule,
-            isBlindApp: entity.isBlindApp?.boolValue ?? false,
+            isBlindApp: entity.isBlindApp?.boolValue,
             extractionMethod: entity.extractionMethod,
             appKind: entity.appKind
         )

@@ -144,7 +144,11 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         let windowTitle = focusedWindowTitle(from: appElement) ?? appName
         // Use the RAW selected text (untrimmed) so the formatter's space restoration on
         // replacement (Phase 4C) keeps the selection's edge spaces.
-        let selectedText = selectionSnapshot?.selectedText ?? self.rawSelectedText(from: appElement)
+        // Trust the start-time snapshot only if it came from the SAME app — the user may have
+        // switched apps mid-dictation, and a stale selection from another app must not leak in.
+        let snapshotIsSameApp = selectionSnapshot?.bundleIdentifier == bundleIdentifier
+        let selectedText = (snapshotIsSameApp ? selectionSnapshot?.selectedText : nil)
+            ?? self.rawSelectedText(from: appElement)
 
         // Async AX read — purely observational (never simulates input or moves the caret).
         // If it can't resolve context, the caller falls back to the start-of-recording snapshot.
