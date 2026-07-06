@@ -21,6 +21,10 @@ struct SurroundingTextSnapshot: Sendable {
     let extractionMethod: ExtractionMethod
     /// What kind of app the text came from. Diagnostics/UX only — never drives logic.
     var appKind: AppKind = .unknown
+    /// True when the read was genuinely bounded to the focused FIELD. A TextMarker read whose
+    /// field-range SPI failed degrades to line/document bounds — usable, but it may carry PAGE
+    /// text, so callers should prefer a self-scoped control read over it when one exists.
+    var boundsFieldScoped: Bool = true
 
     /// Semantic position of the cursor within the focused field.
     enum CursorPosition: String {
@@ -106,6 +110,18 @@ enum AccessibilityTextReader {
         if kind == .webView,
            let markerSnap = extractViaTextMarkers(focused, maxBefore: maxBefore, maxAfter: maxAfter),
            markerSnap.hasContext {
+            // A marker read can silently carry PAGE text: shadow-DOM controls degrade the bounds
+            // ladder, and some engines return a document range even for the field rung. When the
+            // control offers an honest self-scoped value, trust the markers only if they AGREE
+            // with it at the seam (whitespace-insensitively — marker reads legitimately differ
+            // only in break representation) AND their bounds were genuinely field-scoped.
+            if let nativeSnap = nativeReadForWebFormControl(focused, maxBefore: maxBefore, maxAfter: maxAfter),
+               !markerSnap.boundsFieldScoped
+                || !seamsAgree(markerPreceding: markerSnap.precedingText, markerFollowing: markerSnap.followingText,
+                               controlPreceding: nativeSnap.precedingText, controlFollowing: nativeSnap.followingText) {
+                axLog.info("readSurroundingText(sync)\(tag, privacy: .public): marker read not consistent with the control's self-scoped value — using the form-control read — prec=\(nativeSnap.precedingText?.count ?? 0)ch foll=\(nativeSnap.followingText?.count ?? 0)ch")
+                return nativeSnap.withAppKind(.webView)
+            }
             axLog.info("readSurroundingText(sync)\(tag, privacy: .public): done via TextMarkers — prec=\(markerSnap.precedingText?.count ?? 0)ch foll=\(markerSnap.followingText?.count ?? 0)ch")
             return markerSnap.withAppKind(.webView)
         }
@@ -221,6 +237,19 @@ enum AccessibilityTextReader {
         if focusedIsWeb,
            let markerSnap = extractViaTextMarkers(focused, maxBefore: maxBefore, maxAfter: maxAfter),
            markerSnap.hasContext {
+            // A marker read can silently carry PAGE text: shadow-DOM controls degrade the bounds
+            // ladder, and some engines return a document range even for the field rung. When the
+            // control offers an honest self-scoped value, trust the markers only if they AGREE
+            // with it at the seam (whitespace-insensitively — marker reads legitimately differ
+            // only in break representation) AND their bounds were genuinely field-scoped.
+            if let nativeSnap = nativeReadForWebFormControl(focused, maxBefore: maxBefore, maxAfter: maxAfter),
+               !markerSnap.boundsFieldScoped
+                || !seamsAgree(markerPreceding: markerSnap.precedingText, markerFollowing: markerSnap.followingText,
+                               controlPreceding: nativeSnap.precedingText, controlFollowing: nativeSnap.followingText) {
+                let elapsed = ContinuousClock.now - readStart
+                axLog.info("readSurroundingTextWithSync\(tag, privacy: .public): marker read not consistent with the control's self-scoped value — using the form-control read in \(ms(elapsed))ms — prec=\(nativeSnap.precedingText?.count ?? 0)ch foll=\(nativeSnap.followingText?.count ?? 0)ch")
+                return nativeSnap.withAppKind(.webView)
+            }
             let elapsed = ContinuousClock.now - readStart
             axLog.info("readSurroundingTextWithSync\(tag, privacy: .public): done via TextMarkers in \(ms(elapsed))ms — prec=\(markerSnap.precedingText?.count ?? 0)ch foll=\(markerSnap.followingText?.count ?? 0)ch")
             return markerSnap.withAppKind(.webView)
@@ -276,6 +305,37 @@ enum AccessibilityTextReader {
     /// Classifies a focused element as a native control or a web view, for diagnostics.
     private static func detectAppKind(of element: AXUIElement) -> SurroundingTextSnapshot.AppKind {
         isWebOrElectronElement(element) ? .webView : .native
+    }
+
+    /// Whitespace-insensitive agreement between a marker read and the focused control's own
+    /// self-scoped read at the insertion seam. A marker read that truly reflects the control
+    /// differs from its `kAXValue` only in BREAK REPRESENTATION (structural "\n" vs a flattened
+    /// space), so the non-whitespace characters adjacent to the caret must match on both sides;
+    /// page-scoped marker text (the shadow-DOM leak class) differs in CONTENT and fails the check.
+    /// Pure string logic — kept engine-agnostic and offline-testable on purpose.
+    static func seamsAgree(
+        markerPreceding: String?, markerFollowing: String?,
+        controlPreceding: String?, controlFollowing: String?,
+        window: Int = 24
+    ) -> Bool {
+        // The non-whitespace "core" adjacent to the seam (tail of preceding / head of following).
+        func core(_ s: String?, tail: Bool) -> [Unicode.Scalar] {
+            let scalars = (s ?? "").unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }
+            let arr = Array(scalars)
+            return tail ? Array(arr.suffix(window)) : Array(arr.prefix(window))
+        }
+        // Compare over the SHORTER core so different capture caps still align at the seam;
+        // one side empty while the other has text is a content mismatch, not an alignment issue.
+        func agree(_ a: String?, _ b: String?, tail: Bool) -> Bool {
+            let ca = core(a, tail: tail), cb = core(b, tail: tail)
+            let n = min(ca.count, cb.count)
+            guard n > 0 else { return ca.count == cb.count }
+            let sa = tail ? Array(ca.suffix(n)) : Array(ca.prefix(n))
+            let sb = tail ? Array(cb.suffix(n)) : Array(cb.prefix(n))
+            return sa == sb
+        }
+        return agree(markerPreceding, controlPreceding, tail: true)
+            && agree(markerFollowing, controlFollowing, tail: false)
     }
 
     // MARK: Private — TextMarker reads (web / Electron)
@@ -335,7 +395,7 @@ enum AccessibilityTextReader {
         guard let caretStart = startMarker(of: selRange, element: element),
               let caretEnd   = endMarker(of: selRange, element: element) else {
             axLog.debug("textMarkers: cannot split selection range — trying index path")
-            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter)
+            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter, fieldScoped: scopeElement == nil)
         }
 
         // Field bounds: prefer the element's own marker range so preceding/following stay scoped
@@ -344,29 +404,33 @@ enum AccessibilityTextReader {
         // ready" status in a chat app), wrongly capturing it as the preceding text. So before
         // falling back to document-wide, clamp the read to the caret's CURRENT LINE — the caret
         // is in the real field, so its line is the field's content, not a sibling page element.
-        let bounds: (start: CFTypeRef, end: CFTypeRef)? = {
+        // Bounds plus whether they are genuinely scoped to the focused FIELD. When the field-range
+        // SPI is unavailable (e.g. a shadow-DOM text control), the ladder degrades to the caret's
+        // line or the whole document — still useful for rich editors, but page-scoped: the caller
+        // must then prefer the control's own self-scoped value over this read.
+        let bounds: (start: CFTypeRef, end: CFTypeRef, fieldScoped: Bool)? = {
             // Scope to the focused FIELD (scopeElement when reading via an ancestor), never the page.
             if let fieldRange = copyParam(element, "AXTextMarkerRangeForUIElement", scopeElement ?? element),
                let fs = startMarker(of: fieldRange, element: element),
                let fe = endMarker(of: fieldRange, element: element) {
-                return (fs, fe)
+                return (fs, fe, true)
             }
             if let lineRange = copyParam(element, "AXLineTextMarkerRangeForTextMarker", caretStart),
                let ls = startMarker(of: lineRange, element: element),
                let le = endMarker(of: lineRange, element: element) {
                 axLog.info("textMarkers: field range unavailable — scoping to the caret's current line")
-                return (ls, le)
+                return (ls, le, false)
             }
             if let ds = copyAttr(element, "AXStartTextMarker"),
                let de = copyAttr(element, "AXEndTextMarker") {
                 axLog.info("textMarkers: field+line ranges unavailable — document-wide bounds (may include page text)")
-                return (ds, de)
+                return (ds, de, false)
             }
             return nil
         }()
         guard let bounds else {
             axLog.debug("textMarkers: no field/document bounds — trying index path")
-            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter)
+            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter, fieldScoped: scopeElement == nil)
         }
 
         // Order the selection's two boundary markers by document position before slicing.
@@ -384,7 +448,7 @@ enum AccessibilityTextReader {
         // this reorder prevents) — defer to the index path instead of guessing.
         if (toCaretStart == nil) != (toCaretEnd == nil) {
             axLog.debug("textMarkers: one selection boundary unresolved — trying index path")
-            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter)
+            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter, fieldScoped: scopeElement == nil)
         }
         let startIsEarlier = (toCaretStart?.count ?? 0) <= (toCaretEnd?.count ?? 0)
         let selEndMarker = startIsEarlier ? caretEnd : caretStart
@@ -392,7 +456,7 @@ enum AccessibilityTextReader {
         let follFull = markerRangeString(element, from: selEndMarker, to: bounds.end)
         guard precFull != nil || follFull != nil else {
             axLog.debug("textMarkers: marker ranges produced no string — trying index path")
-            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter)
+            return markerReadViaIndex(element, selRange: selRange, maxBefore: maxBefore, maxAfter: maxAfter, fieldScoped: scopeElement == nil)
         }
 
         // Empty field that leaks its placeholder as phantom marker text. The integer
@@ -420,7 +484,7 @@ enum AccessibilityTextReader {
 
             if precedingContradiction || valuePresentAndEmpty || matchesPlaceholder {
                 axLog.info("textMarkers: caret (0,0) placeholder field — prec=\(precFull?.count ?? 0)ch foll=\(follFull?.count ?? 0)ch valueEmpty=\(valuePresentAndEmpty, privacy: .public) matchPlaceholder=\(matchesPlaceholder, privacy: .public) — treating as empty")
-                return .init(precedingText: "", followingText: "", cursorPosition: .empty, extractionMethod: .axWebTextMarker)
+                return .init(precedingText: "", followingText: "", cursorPosition: .empty, extractionMethod: .axWebTextMarker, boundsFieldScoped: bounds.fieldScoped)
             }
             // Caret at the start with marker text but no placeholder tell fired: this is either a
             // real cursor-at-start with text after, or a placeholder we can't yet identify. Log
@@ -474,7 +538,7 @@ enum AccessibilityTextReader {
 
         // Rung-internal detail — the entry point logs the one attributable per-read summary line.
         axLog.debug("textMarkers[markers]: prec=\(precedingText?.count ?? -1)ch foll=\(followingText?.count ?? -1)ch idx=\(idx ?? -1) total=\(totalChars) pos=\(position.rawValue, privacy: .public)")
-        return .init(precedingText: precedingText, followingText: followingText, cursorPosition: position, extractionMethod: .axWebTextMarker)
+        return .init(precedingText: precedingText, followingText: followingText, cursorPosition: position, extractionMethod: .axWebTextMarker, boundsFieldScoped: bounds.fieldScoped)
     }
 
     // MARK: TextMarker C SPI (resolved at runtime via dlsym; nil if unavailable)
@@ -567,11 +631,15 @@ enum AccessibilityTextReader {
 
     /// Fallback: caret integer index via AXIndexForTextMarker, then AXStringForRange char-range
     /// slicing. For apps exposing the index API instead of the range-decomposition path.
+    /// - Parameter fieldScoped: whether the produced slice is bounded to the focused FIELD
+    ///   (true when slicing on the leaf itself) or to the hosting document (false on the
+    ///   webArea rung) — propagated into the snapshot's `boundsFieldScoped`.
     private static func markerReadViaIndex(
         _ element: AXUIElement,
         selRange: CFTypeRef,
         maxBefore: Int,
-        maxAfter: Int
+        maxAfter: Int,
+        fieldScoped: Bool = true
     ) -> SurroundingTextSnapshot? {
         // AXIndexForTextMarker takes a single AXTextMarker, not a range — pass the caret (start)
         // marker extracted from the selection range, else the call fails and this rung stays dead.
@@ -597,7 +665,7 @@ enum AccessibilityTextReader {
             idx <= 0 ? .start : ((total.map { idx >= $0 } ?? false) ? .end : .middle)
         // Rung-internal detail — the entry point logs the one attributable per-read summary line.
         axLog.debug("textMarkers[index]: prec=\(prec?.count ?? -1)ch foll=\(foll?.count ?? -1)ch idx=\(idx) pos=\(position.rawValue, privacy: .public)")
-        return .init(precedingText: prec, followingText: foll, cursorPosition: position, extractionMethod: .axWebTextMarker)
+        return .init(precedingText: prec, followingText: foll, cursorPosition: position, extractionMethod: .axWebTextMarker, boundsFieldScoped: fieldScoped)
     }
 
     /// Reads the substring for an integer character range via the AXStringForRange
