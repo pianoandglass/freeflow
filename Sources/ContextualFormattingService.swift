@@ -253,6 +253,9 @@ public enum ContextualFormattingService {
     private static func isLikelyAbbreviation(_ text: String) -> Bool {
         guard text.hasSuffix(".") else { return false }
         let word = String(text.dropLast().reversed().prefix(while: { !$0.isWhitespace }).reversed())
+        // A token containing a digit ("17h59", "v2", "5km") is a time/version/measure — its
+        // trailing period ends the sentence; it is never an abbreviation like "Dr." or "etc.".
+        guard !word.contains(where: { $0.isNumber }) else { return false }
         let letters = word.filter { $0.isLetter }
         guard !letters.isEmpty, letters.count <= 4 else { return false }
         let allUppercase = letters.allSatisfy { $0.isUppercase }
